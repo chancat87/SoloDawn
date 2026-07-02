@@ -93,7 +93,7 @@ Step-by-step instructions for both modes are at the bottom of this file: [Usage 
 
 ### Experience & Integrations
 - ✅ Web pseudo-terminal (xterm.js + native PTY) for real-time debugging and interaction
-- ✅ Slash-command injection: 6 built-in presets + custom commands, adapting third-party plugins
+- ✅ Slash commands: 6 built-in presets + custom commands, delivered to the primary Agent which recognizes and forwards them to the right terminal — adapting third-party plugins
 - ✅ All official built-in CLI commands inherited (including UltraCode mode): enable via a dedicated prompt in manual workflows to generate reusable, capability-bounded standardized workflow scripts
 - ✅ Setup Wizard for first-run onboarding; automatic runtime-environment and installed-CLI detection
 - ✅ Internationalization: 6 languages (English, 简体中文, 繁體中文, 日本語, Español, 한국어)
@@ -422,7 +422,7 @@ For users who want full control over the workflow graph. The creation wizard has
 3. **Define tasks** (Step 2): split the work into tasks; each task will get its own branch and worktree.
 4. **Configure models** (Step 3): maintain the model library (provider / base URL / key). Anything configured in global Settings is read directly here; you can also configure models just for this workflow.
 5. **Configure terminals** (Step 4): the page detects your machine's runtime environment and installed AI CLIs (scroll down on this page to see it). Then, for each task, choose which terminal (CLI) to use, which model that terminal runs, and a role description for it. **This is where multi-CLI collaboration happens** — e.g., a Claude Code terminal running a GLM model as the developer, and a Codex terminal running a GPT model as the auditor.
-6. **Slash commands** (Step 5): enable slash commands for a terminal; at runtime the command is prepended to the prompt. Six presets ship built-in (write-code / review / fix-issues / test / refactor / document) and you can add your own — plugin marketplaces are full of plugins, each with its own command; add yours here and the workflow can invoke your plugin as it runs.
+6. **Slash commands** (Step 5): enable slash commands for the workflow. Commands are not sent to a terminal directly — they are delivered to the primary Agent, which recognizes them and forwards them to the right terminal on its own as the run proceeds (the entire workflow is under the primary Agent's control anyway). Six presets ship built-in (write-code / review / fix-issues / test / refactor / document) and you can add your own — plugin marketplaces are full of plugins, each with its own command; add yours here and the primary Agent can invoke your plugin during the run.
 7. **Advanced** (Step 6): choose which AI coordinates the multi-task run (the orchestrator model), and which terminal + model resolves conflicts and completes the merge when branches come together; you can also toggle "run tests before merge" and "pause on conflict".
 
 > **Power move: UltraCode.** A manual workflow launches your native terminal, so beyond your skills / MCP servers / plugins, the CLI's official built-in commands are inherited too — including UltraCode mode. Enable it by configuring a dedicated prompt for a task (the task description is typed into that task's terminal verbatim): UltraCode generates standardized workflow scripts that hardcode clear capability boundaries for each Agent, and invoking that script afterwards reuses the entire workflow.
