@@ -50,24 +50,50 @@ impl ProtocolPeer {
         interrupt_rx: oneshot::Receiver<()>,
     ) -> Result<(), ExecutorError> {
         let mut reader = BufReader::new(stdout);
-        let mut buffer = String::new();
+        // Byte buffer for `read_until`: it accumulates partially-read bytes
+        // IN PLACE across cancelled reads, which is what makes the select!
+        // loop below cancellation-safe (see the read branch comment).
+        let mut buffer: Vec<u8> = Vec::new();
         // Fuse the receiver so it returns Pending forever after completing
         let mut interrupt_rx = interrupt_rx.fuse();
 
         loop {
-            buffer.clear();
             tokio::select! {
-                line_result = reader.read_line(&mut buffer) => {
-                    match line_result {
-                        Ok(0) => break, // EOF
+                read_result = reader.read_until(b'\n', &mut buffer) => {
+                    match read_result {
+                        // EOF: this call appended no bytes. An unterminated
+                        // tail left in `buffer` (child exited mid-line after a
+                        // cancelled read) is dropped, matching the previous
+                        // `read_line` behavior at EOF.
+                        Ok(0) => break,
                         Ok(_) => {
+                            // Cancellation safety (why `read_until`, not
+                            // `read_line`): tokio's `read_line` moves the
+                            // caller's String into its future, so when the
+                            // interrupt branch below wins mid-read the partial
+                            // bytes are dropped with the future and the line
+                            // is torn. `read_until` borrows `buffer` and
+                            // appends in place, completing only at the
+                            // delimiter or EOF — a cancelled call leaves the
+                            // partial bytes in `buffer` and the next call
+                            // appends the remainder, so lines are never torn.
+                            let line_owned =
+                                match String::from_utf8(std::mem::take(&mut buffer)) {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "Error reading stdout: CLI emitted invalid UTF-8: {e}"
+                                        );
+                                        break;
+                                    }
+                                };
                             // E33-07: `trim()` strips both leading and trailing
                             // whitespace (including the `\n` terminator). This
                             // is acceptable here because the Claude CLI emits
                             // one JSON object per line, and any leading/
                             // trailing whitespace is never semantically
                             // significant inside the line framing.
-                            let line = buffer.trim();
+                            let line = line_owned.trim();
                             if line.is_empty() {
                                 continue;
                             }
