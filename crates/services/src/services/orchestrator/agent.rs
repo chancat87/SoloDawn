@@ -897,11 +897,14 @@ impl OrchestratorAgent {
                 commands.push(format!(
                     "- order={} command={} params={}",
                     command.order_index,
-                    label,
+                    label.trim_start_matches('/'),
                     command.custom_params.as_deref().unwrap_or("{}")
                 ));
             }
-            format!("Workflow slash commands:\n{}", commands.join("\n"))
+            format!(
+                "Workflow slash commands (leading '/' removed — prepend '/' to the command when sending it to a terminal):\n{}",
+                commands.join("\n")
+            )
         };
 
         Ok(format!(
@@ -10522,6 +10525,15 @@ impl OrchestratorAgent {
         self.llm_client.reset_provider(provider_name).await
     }
 
+    /// Strip a single leading '/' (after optional whitespace) from slash-command
+    /// content delivered to the orchestrator conversation, so a CLI-backed
+    /// session cannot execute it directly. The orchestrator prepends '/' again
+    /// when it forwards the command to a terminal.
+    pub(crate) fn strip_leading_slash(text: &str) -> &str {
+        let trimmed = text.trim_start();
+        trimmed.strip_prefix('/').unwrap_or(text)
+    }
+
     /// Execute slash commands for this workflow
     ///
     /// Loads all slash commands associated with the workflow, renders their
@@ -10603,10 +10615,19 @@ impl OrchestratorAgent {
                 cmd.order_index
             );
 
-            // Add rendered prompt as user message to conversation
+            // Deliver the command with its leading '/' removed so it cannot
+            // execute directly in the orchestrator conversation; the agent
+            // must prepend '/' when forwarding the command to a terminal.
+            let command_name = preset.command.trim_start_matches('/');
+            let safe_prompt = Self::strip_leading_slash(&rendered_prompt);
+            let message = format!(
+                "Workflow slash command '{command_name}' (leading '/' removed — prepend '/' to the command when you send it to a terminal):\n{safe_prompt}"
+            );
+
+            // Add the sanitized command prompt as user message to conversation
             {
                 let mut state = self.state.write().await;
-                state.add_message("user", &rendered_prompt, &self.config);
+                state.add_message("user", &message, &self.config);
             }
 
             // Send to LLM and get response

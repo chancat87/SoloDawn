@@ -47,6 +47,21 @@ mod orchestrator_tests {
     }
 
     #[test]
+    fn test_strip_leading_slash_for_orchestrator_delivery() {
+        assert_eq!(
+            OrchestratorAgent::strip_leading_slash("/review src/auth.rs"),
+            "review src/auth.rs"
+        );
+        assert_eq!(OrchestratorAgent::strip_leading_slash("  /deploy"), "deploy");
+        assert_eq!(
+            OrchestratorAgent::strip_leading_slash("no slash here"),
+            "no slash here"
+        );
+        assert_eq!(OrchestratorAgent::strip_leading_slash("//double"), "/double");
+        assert_eq!(OrchestratorAgent::strip_leading_slash(""), "");
+    }
+
+    #[test]
     fn test_terminal_completion_event_full() {
         let event = TerminalCompletionEvent {
             terminal_id: "terminal-1".to_string(),

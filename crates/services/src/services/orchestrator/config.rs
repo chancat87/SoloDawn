@@ -216,6 +216,9 @@ merge_branch: {"type":"merge_branch","source_branch":"feat/x","target_branch":"m
 complete_workflow: {"type":"complete_workflow","summary":"..."}
 fail_workflow: {"type":"fail_workflow","reason":"..."}
 
+## Workflow Slash Commands
+Workflows may configure slash commands (built-in presets or CLI plugin commands). They are delivered to you with the leading '/' removed so they cannot execute directly in this conversation. To invoke one on a terminal, prepend '/' to the command in the message you send, e.g. {"type":"send_to_terminal","terminal_id":"tm1","message":"/review"}. The terminal CLI recognizes and executes it natively.
+
 ## Example Response (from-scratch)
 [
   {"type":"create_task","task_id":"task-1","name":"Foundation","branch":"feat/foundation","order_index":0},
@@ -364,6 +367,22 @@ mod tests {
         let prompt = system_prompt_for_profile(PromptProfile::RuntimeOrchestrator);
         assert!(prompt.contains("send_to_terminal"));
         assert!(prompt.contains("create_task"));
+    }
+
+    #[test]
+    fn runtime_prompt_documents_slash_command_handling() {
+        let prompt = system_prompt_for_profile(PromptProfile::RuntimeOrchestrator);
+        assert!(prompt.contains("## Workflow Slash Commands"));
+        assert!(
+            prompt.contains("prepend '/'"),
+            "runtime prompt must tell the agent to re-add the slash when invoking a command on a terminal"
+        );
+
+        let planning = system_prompt_for_profile(PromptProfile::WorkspacePlanning);
+        assert!(
+            !planning.contains("## Workflow Slash Commands"),
+            "planning prompt must not reference runtime slash-command handling"
+        );
     }
 
     #[test]
