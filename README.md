@@ -18,7 +18,7 @@
 
 ## What Is SoloDawn?
 
-SoloDawn is an open-source web app that runs on your own machine (Rust backend + React frontend): an upper-layer orchestrator Agent commands the **AI CLIs actually installed on your computer** (Claude Code, Codex, Gemini CLI — 9 in total) to carry out fully automated development inside a Git repository — requirement clarification → technical spec generation → task decomposition → parallel development on isolated branches → three-layer quality gates → scored acceptance review → automatic merge.
+SoloDawn is an open-source web app that runs on your own machine (Rust backend + React frontend): an upper-layer orchestrator Agent (the primary Agent) commands the **AI CLIs actually installed on your computer** (Claude Code, Codex, Gemini CLI — 9 in total) to carry out fully automated development inside a Git repository — requirement clarification → technical spec generation → task decomposition → parallel development on isolated branches → three-layer quality gates → scored acceptance review → automatic merge.
 
 SoloDawn's ultimate design goal is to **complete complex, production-grade products through a simple conversation on a social platform** — not toy demos, but real, complex, production-ready software.
 
@@ -32,7 +32,11 @@ SoloDawn's ultimate design goal is to **complete complex, production-grade produ
 
 ### Highlight 1: Fully Automated AI Development
 
-One orchestrator Agent commanding multiple terminals. AI-assisted coding today has a fundamental contradiction: programmers still have to build workflows, configure skills, wire up MCP servers, and write plans themselves — the human remains the driver; non-programmers can't even turn a requirement into a technical spec. SoloDawn takes the driving over from the human:
+The Orchestrated Workspace uses a **two-layer Agent architecture**: a primary Agent plus child Agents — not three layers, and no child Agent is preconfigured. Every child Agent is dynamically spawned and terminated by the primary Agent: whenever the work needs more hands (additional tasks, code review, defect fixing, integration repair), the primary Agent creates new child Agents — exactly as many as required, closed when done. This design is fully implemented.
+
+Why abandon fixed workflow definitions? Because rigid workflows introduce hard constraints: they're overly cumbersome for simple tasks yet lack capacity for complex ones, and the conditional-judgment logic inside a workflow inevitably misjudges. So the two-layer architecture grants full authority to the primary Agent — it alone decides what to spawn, how many, and when to close them.
+
+AI-assisted coding today has a fundamental contradiction: programmers still have to build workflows, configure skills, wire up MCP servers, and write plans themselves — the human remains the driver; non-programmers can't even turn a requirement into a technical spec. SoloDawn takes the driving over from the human:
 
 | Who you are | What you do | What the system does |
 |---|---|---|
@@ -45,9 +49,10 @@ Delivery isn't "it ran, so it's done": every commit passes quality gates, and ev
 
 ### Highlight 2: Native Skill / MCP / Plugin Support — in Both Manual Workflows and Fully Automated AI Development
 
-Whichever mode you use, SoloDawn launches the **real CLI processes installed on your machine** (native PTY — not an API re-wrap). Whatever tools you have configured are exactly the tools available here:
+Whichever mode you use, SoloDawn launches the **real CLI processes installed on your machine** (native PTY — not an API re-wrap), and prompts reach the CLI verbatim — zero interception, zero rewriting. Whatever tools you have configured are exactly the tools available here — and the inheritance goes beyond your own tools: **the CLI's official built-in commands are inherited too, including UltraCode mode**.
 
 - **Zero migration for skills, plugins, MCP servers, and slash commands** — no re-configuration inside SoloDawn; they're inherited as-is, and you're free to use and change them however you like;
+- **All official built-in commands inherited (including UltraCode)** — in a manual workflow, configure a dedicated prompt for a task to enable UltraCode: it generates standardized workflow scripts that hardcode clear capability boundaries for each Agent; afterwards, invoking that script reuses the entire workflow;
 - **Full automation or manual control — both work** — the Orchestrated Workspace hands everything to AI; the Manual Workflow lets you customize every detail of the workflow graph: how many terminals, what roles, which models, which slash commands;
 - **9 AI CLIs collaborating inside one workflow** — e.g. a Claude Code terminal running a GLM model as the developer and a Codex terminal running a GPT model as the auditor.
 
@@ -60,7 +65,8 @@ Step-by-step instructions for both modes are at the bottom of this file: [Usage 
 ## Feature Overview
 
 ### Orchestration & Execution
-- ✅ Upper-layer orchestrator Agent commanding the full workflow lifecycle; Git-driven event loop saves 98%+ tokens vs polling
+- ✅ **Two-layer Agent architecture**: the primary Agent holds full decision authority; child Agents are zero-preconfigured — dynamically spawned and closed on demand, with more created whenever review / fixes / additional tasks need more hands
+- ✅ Primary (orchestrator) Agent commanding the full workflow lifecycle; Git-driven event loop saves 98%+ tokens vs polling
 - ✅ Two work modes: Orchestrated Workspace (Agent-planned, fully automated) / Manual Workflow (DIY)
 - ✅ Orchestrated Workspace sub-modes: Direct Execution (precise input) / Guided Conversation (plain-language clarification)
 - ✅ Multi-task parallel execution: per-task Git branch + isolated worktree, up to 10 concurrent workflows by default
@@ -88,6 +94,7 @@ Step-by-step instructions for both modes are at the bottom of this file: [Usage 
 ### Experience & Integrations
 - ✅ Web pseudo-terminal (xterm.js + native PTY) for real-time debugging and interaction
 - ✅ Slash-command injection: 6 built-in presets + custom commands, adapting third-party plugins
+- ✅ All official built-in CLI commands inherited (including UltraCode mode): enable via a dedicated prompt in manual workflows to generate reusable, capability-bounded standardized workflow scripts
 - ✅ Setup Wizard for first-run onboarding; automatic runtime-environment and installed-CLI detection
 - ✅ Internationalization: 6 languages (English, 简体中文, 繁體中文, 日本語, Español, 한국어)
 - ✅ Telegram connector; Feishu (Lark) long-lived WebSocket connector (not re-tested for 1.0, see [Current Limitations & Roadmap](#current-limitations--roadmap))
@@ -101,9 +108,10 @@ Step-by-step instructions for both modes are at the bottom of this file: [Usage 
 
 ## How It Works
 
-Three core design principles:
+Four core design principles:
 
 - **Upper-layer orchestration, not code generation.** The orchestrator Agent never writes code — it commands the best professional AI CLIs (Claude Code, Gemini CLI, Codex, Amp, Cursor Agent, etc.) to do the work.
+- **Two layers of Agents, no fixed workflows.** Just a primary Agent and child Agents — none preconfigured, no rigid workflow definitions. Fixed workflows are too heavy for simple tasks, too small for complex ones, and their conditional logic inevitably misjudges — so full decision authority lives with the primary Agent, which spawns and closes child Agents dynamically.
 - **Non-invasive by design.** SoloDawn doesn't replace any CLI, modify any config, or define new tools. It inherits the full native ecosystem of every CLI — all slash commands, plugins, skills, and MCP servers work unchanged.
 - **Git-driven event loop.** The orchestrator only consumes LLM tokens when a Git commit event occurs; between events it sleeps at zero cost — saving 98%+ tokens compared to polling.
 
@@ -131,11 +139,16 @@ Three core design principles:
                         Auto-Merge → main
 ```
 
-**Three-layer execution model:**
+**Two-layer Agent architecture (Orchestrated Workspace):**
 
-- **Workflow** → the orchestrator Agent manages the entire lifecycle (up to 10 concurrent workflows by default)
+- **Primary Agent (orchestrator)** → one per workflow, holding full decision authority: decomposes the spec, dynamically creates/starts/closes child Agents, parses Git events, routes review and fix cycles
+- **Child Agents** → zero preconfigured; all created and terminated by the primary Agent at runtime. Each one materializes as a terminal — a native AI CLI process (PTY) on your machine. New ones can be spawned at any point mid-run: code review, defect fixing, integration repair, and follow-up tasks all get fresh child Agents (concurrency is capped by a global terminal limit; excess dispatches queue and drain as slots free)
+
+**Git-side execution structure:**
+
+- **Workflow** → the primary Agent manages the entire lifecycle (up to 10 concurrent workflows by default)
 - **Task** → independent Git branch (`workflow/{workflow-id}/{task-name}`) + isolated worktree, runs in parallel with other tasks
-- **Terminal** → a native AI CLI process (PTY), runs serially within its task, gated by quality checks
+- **Terminal** → the runtime vehicle of a child Agent, runs serially within its task, gated by quality checks
 
 **Code passes four checkpoints between generation and main:** every commit passes the Terminal Gate (changed-files scope) → a finished task passes the Branch Gate (branch scope) → the acceptance review scores it against the rubric (≥ 90 proceeds, otherwise sent back for self-repair) → the Repo Gate runs before merge (whole-repository scope). Whenever a checkpoint fails, structured fix instructions go back to the same terminal automatically — it repairs, re-commits, and gets re-checked with no human in the loop. Details in [Quality System in Depth](#quality-system-in-depth) and [Acceptance Review & Scoring Rubric](#acceptance-review--scoring-rubric).
 
@@ -398,7 +411,7 @@ Want your own acceptance criteria? Upload an audit document **before** confirmin
 
 **Step 4: Click Confirm in the top-right.** Confirmation is two-step: first confirm the technical spec (the scoring rubric is generated and locked at that instant), then confirm the quality gate configuration. **Remember to click Confirm when the conversation is done — nothing executes otherwise.** This is a hard block in the code: only after both confirmations does the workflow materialize and start automatically.
 
-**Step 5: Wait for delivery.** Everything from here is automatic: the orchestrator Agent decomposes the spec into tasks, opens branches, and drives them in parallel; every commit passes the Terminal Gate, every finished task passes the Branch Gate, and the acceptance review releases a task at ≥ 90 points (otherwise it's sent back automatically, up to 5 rounds); when all tasks complete, branches merge back to main automatically, with conflicts handled by your designated merge terminal — or configure "pause on conflict" for manual intervention.
+**Step 5: Wait for delivery.** Everything from here is automatic: the primary Agent decomposes the spec into tasks and spawns child Agents on demand (nothing is preconfigured — when review, fixes, or integration repair need more hands it simply creates more, closing them when done), opens branches, and drives them in parallel; every commit passes the Terminal Gate, every finished task passes the Branch Gate, and the acceptance review releases a task at ≥ 90 points (otherwise it's sent back automatically, up to 5 rounds); when all tasks complete, branches merge back to main automatically, with conflicts handled by your designated merge terminal — or configure "pause on conflict" for manual intervention.
 
 ## Usage Guide: Manual Workflow
 
@@ -411,6 +424,8 @@ For users who want full control over the workflow graph. The creation wizard has
 5. **Configure terminals** (Step 4): the page detects your machine's runtime environment and installed AI CLIs (scroll down on this page to see it). Then, for each task, choose which terminal (CLI) to use, which model that terminal runs, and a role description for it. **This is where multi-CLI collaboration happens** — e.g., a Claude Code terminal running a GLM model as the developer, and a Codex terminal running a GPT model as the auditor.
 6. **Slash commands** (Step 5): enable slash commands for a terminal; at runtime the command is prepended to the prompt. Six presets ship built-in (write-code / review / fix-issues / test / refactor / document) and you can add your own — plugin marketplaces are full of plugins, each with its own command; add yours here and the workflow can invoke your plugin as it runs.
 7. **Advanced** (Step 6): choose which AI coordinates the multi-task run (the orchestrator model), and which terminal + model resolves conflicts and completes the merge when branches come together; you can also toggle "run tests before merge" and "pause on conflict".
+
+> **Power move: UltraCode.** A manual workflow launches your native terminal, so beyond your skills / MCP servers / plugins, the CLI's official built-in commands are inherited too — including UltraCode mode. Enable it by configuring a dedicated prompt for a task (the task description is typed into that task's terminal verbatim): UltraCode generates standardized workflow scripts that hardcode clear capability boundaries for each Agent, and invoking that script afterwards reuses the entire workflow.
 
 Manual workflow video demo (recorded February 2026 when the project was still called GitCortex; it covers only the manual workflow and the UI has since changed): [GitCortex minimal MVP demo — bilibili](https://www.bilibili.com/video/BV1yxfMBCEFh/)
 
