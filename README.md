@@ -71,6 +71,8 @@ Step-by-step instructions for both modes are at the bottom of this file: [Usage 
 - ✅ Orchestrated Workspace sub-modes: Direct Execution (precise input) / Guided Conversation (plain-language clarification)
 - ✅ Multi-task parallel execution: per-task Git branch + isolated worktree, up to 10 concurrent workflows by default
 - ✅ Planning Draft lifecycle: gathering → spec_ready → confirmed → materialized
+- ✅ **Continuation rounds** (landed post-1.0): a delivered conversation continues in place — round N+1 plans only the delta, prior rounds fold into the same thread, one active round per project
+- ✅ **Requirement ledger (评分点)**: acceptance criteria become project-scoped points (`RP-001`, …) settled at scoring time — delivered points store a compressed context capsule, regressions are flagged per point
 - ✅ Cross-terminal context handoff (each terminal's work passed to the next)
 - ✅ Automatic branch merging + a designated conflict-resolution terminal; optional "run tests before merge" and "pause on conflict"
 
@@ -410,9 +412,11 @@ The flow in one sentence: configure a model → bind a Git repository → (optio
 
 Want your own acceptance criteria? Upload an audit document **before** confirming (Builtin / Merged / Custom modes — see [Acceptance Review & Scoring Rubric](#acceptance-review--scoring-rubric)); after confirmation the rubric panel becomes read-only.
 
-**Step 4: Click Confirm in the top-right.** Confirmation is two-step: first confirm the technical spec (the scoring rubric is generated and locked at that instant), then confirm the quality gate configuration. **Remember to click Confirm when the conversation is done — nothing executes otherwise.** This is a hard block in the code: only after both confirmations does the workflow materialize and start automatically.
+**Step 4: Click Confirm in the top-right.** Confirmation is two-step: first confirm the technical spec (the scoring rubric is generated and locked at that instant), then confirm the quality gate configuration. The generated rubric immediately appears as a card in the conversation — every acceptance criterion tagged with its requirement-point code (`RP-001`, …) — and the requirement ledger opens as a side panel next to the audit-doc panel. **Remember to click Confirm when the conversation is done — nothing executes otherwise.** This is a hard block in the code: only after both confirmations does the workflow materialize and start automatically.
 
 **Step 5: Wait for delivery.** Everything from here is automatic: the primary Agent decomposes the spec into tasks and spawns child Agents on demand (nothing is preconfigured — when review, fixes, or integration repair need more hands it simply creates more, closing them when done), opens branches, and drives them in parallel; every commit passes the Terminal Gate, every finished task passes the Branch Gate, and the acceptance review releases a task at ≥ 90 points (otherwise it's sent back automatically, up to 5 rounds); when all tasks complete, branches merge back to main automatically, with conflicts handled by your designated merge terminal — or configure "pause on conflict" for manual intervention.
+
+**Step 6: Keep iterating — rounds.** Delivery no longer ends the conversation: once this round's workflow settles, a **Continue** button appears in the same thread. Round N+1 clarifies only the new requirement — the planner starts from the requirement ledger (delivered points + their context capsules) instead of re-reading the project, previously delivered features are protected by regression assertions in the new rubric, and only one round per project runs at a time. Prior rounds stay in the thread as collapsible dividers, their rubric snapshots included.
 
 ## Usage Guide: Manual Workflow
 
@@ -508,6 +512,16 @@ When a task finishes, the acceptance-review LLM scores the delivered code agains
 - Foundation/scaffolding tasks in phased projects use a separate pass threshold (**70**), so pure setup work isn't unfairly killed by functional-completeness criteria
 
 This is why the final delivery is trustworthy: every task had to prove — against criteria derived from *your* requirements — that it met the bar, not merely that it compiled.
+
+### Requirement points & context capsules (评分点)
+
+The rubric's functional-completeness criteria double as a **project-scoped requirement ledger** that outlives a single delivery:
+
+- **Confirm time** — each criterion registers as a point with a stable server-assigned code (`RP-001`, …). The rubric card in the conversation and the ledger side panel both show them; points that are still pending can be edited or removed in the panel before work starts.
+- **Scoring time (评分即结算 — settle at scoring)** — the acceptance review settles the ledger point by point: a delivered point stores a **compressed context capsule** — what was built, where it lives, key decisions & gotchas, how to extend. Capsules are word-capped pointers, never code copies; the repository stays the source of truth.
+- **Follow-up rounds** — the planner and the orchestrator receive the point index + capsules as background, so round N+1 plans the delta instead of re-understanding the project. Previously delivered points enter the new rubric only as regression assertions (verify-not-broken); a red verdict marks the point regressed.
+
+Every ledger operation is fail-open: if it ever breaks, confirm / materialize / review proceed without it.
 
 ## Claude Code: No-`-p` Interactive Transport & Billing Guarantee
 
@@ -623,7 +637,7 @@ SoloDawn/
 
 SoloDawn 1.0 excels at two kinds of work: **zero-to-one greenfield projects**, and **legacy projects that need large-scale refactoring** — especially inherited spaghetti codebases; you could call it a legacy-code slayer.
 
-It is currently **not good at iterating on something it already delivered**: tasks are one-shot — once feature A ships, tuning or extending it means posting a *new* task; you can't continue inside the old one. In those scenarios the experience will be rough. **Before adopting it, work out which kind of need you have.**
+1.0's biggest gap was **iterating on something it already delivered**: tasks were one-shot — once feature A shipped, extending it meant posting a brand-new task with none of the old context. This is exactly what **continuation rounds + the requirement ledger** (landed post-1.0) address: a delivered conversation now continues in place, and the new round plans the delta from the ledger's context capsules instead of restarting from zero (see [Requirement points & context capsules](#requirement-points--context-capsules-评分点)). The mechanism is fully implemented and covered by unit + live-server tests, but it hasn't yet been through a 48-hour-scale acceptance run — treat it as new.
 
 ### What 1.0 was actually tested with (full disclosure)
 
@@ -633,7 +647,7 @@ It is currently **not good at iterating on something it already delivered**: tas
 
 ### Roadmap
 
-- **Continuous iteration on existing projects** (the biggest gap today — top priority)
+- Battle-test continuation rounds (landed post-1.0) at 48-hour-run scale; keep raising context-capsule quality
 - Built-in reusable architecture design templates
 - Built-in general-purpose skills and system prompts to push output quality further
 - Generic fully-automated testing (the pre-release acceptance run *was* fully automated, but that harness isn't generic yet, so it isn't built in)
