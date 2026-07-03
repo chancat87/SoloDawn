@@ -670,3 +670,7 @@ cd frontend && pnpm test:run && pnpm run lint && pnpm run check && cd ..
 ## Blogroll
 
 - [LINUX DO](https://linux.do/)
+
+---
+
+*Formerly known as **GitCortex**.*

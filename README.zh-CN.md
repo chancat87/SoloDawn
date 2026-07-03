@@ -663,3 +663,7 @@ cd frontend && pnpm test:run && pnpm run lint && pnpm run check && cd ..
 ## 友链
 
 - [LINUX DO](https://linux.do/)
+
+---
+
+*曾用名 **GitCortex**。*
