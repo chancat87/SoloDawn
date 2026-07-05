@@ -28,6 +28,16 @@ SoloDawn 的最终设计目标是**通过社交平台的简单对话，完成复
 
 ---
 
+## 交流群
+
+<p align="center">
+  <img src="docs/assets/qq-group-qr.jpg" alt="SoloDawn 交流群二维码" width="240" />
+</p>
+
+扫码或搜索群号 **1053609555** 加入 SoloDawn QQ 交流群——提问、反馈、交流玩法都欢迎。
+
+---
+
 ## 两大核心亮点
 
 ### 亮点一：AI 全自动开发

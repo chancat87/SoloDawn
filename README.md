@@ -28,6 +28,16 @@ SoloDawn's ultimate design goal is to **complete complex, production-grade produ
 
 ---
 
+## Community QQ Group
+
+<p align="center">
+  <img src="docs/assets/qq-group-qr.jpg" alt="SoloDawn QQ group QR code" width="240" />
+</p>
+
+Scan the QR code (or search group ID **1053609555**) to join the SoloDawn QQ group — questions, feedback, and usage ideas are all welcome.
+
+---
+
 ## Two Core Highlights
 
 ### Highlight 1: Fully Automated AI Development
