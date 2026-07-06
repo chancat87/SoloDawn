@@ -247,7 +247,7 @@ Detect my OS (Windows / Linux / macOS) and do whatever is needed to get the web 
    - Rust toolchain nightly-2025-12-04 (rustup install nightly-2025-12-04)
    - Node.js >= 18 and pnpm 10.13.1
    - Git
-   - Build toolchain the Rust backend needs: a C/C++ compiler, protoc 31.1, LLVM/libclang, and (on x86-64) cmake + nasm + perl (for aws-lc-rs)
+   - Build toolchain the Rust backend needs: a C/C++ compiler (on Windows the free Visual Studio 2022 Build Tools with the "Desktop development with C++" workload is enough — no full Visual Studio IDE required; gcc/clang on Linux/macOS), protoc 31.1, LLVM/libclang, and (on x86-64) cmake + nasm + perl (for aws-lc-rs)
 2. cd SoloDawn && pnpm install
 3. Set a 32-character SOLODAWN_ENCRYPTION_KEY environment variable.
 4. pnpm run dev  —  first launch compiles the Rust backend (several minutes), then serves frontend :23457 / backend :23456.
@@ -379,6 +379,7 @@ Production mode serves both frontend and API on a single port: http://localhost:
 
 These trip up first-time setup, especially on Windows:
 
+- **Windows: seeing "Visual Studio" components being installed is normal.** Rust on Windows uses the MSVC toolchain, and native dependencies (SQLite, libgit2, AWS-LC) compile C/C++ from source, so Microsoft's C++ build tools are required. The free Visual Studio 2022 Build Tools with the "Desktop development with C++" workload is all you need — it is exactly what `scripts/setup-windows.ps1` installs, and rustup's own installer prompts for it too; **the full Visual Studio IDE is not required**, and any existing Visual Studio install with the C++ workload works as-is.
 - **`protoc` and `libclang` are required but are NOT installed by `scripts/setup-windows.ps1`.** Without `protoc`, `crates/services`, `crates/runner`, and `crates/feishu-connector` fail to build (there is no vendored protoc in the lockfile). Without `libclang`, `libsqlite3-sys` fails when bindgen runs (the `sqlite-preupdate-hook` sqlx feature triggers it). Install commands are in [Prerequisites](#prerequisites).
 - **Pin `sqlx-cli` to 0.8.x.** The latest 0.9.0 requires rustc ≥ 1.94, but the pinned `nightly-2025-12-04` is rustc 1.93, so an unpinned `cargo install sqlx-cli` fails.
 - **No database is needed to build.** `.cargo/config.toml` sets `SQLX_OFFLINE=true`, so builds use the committed `crates/db/.sqlx/` query cache. You only need `sqlx-cli` / `pnpm run prepare-db` when you change SQL queries or migrations.

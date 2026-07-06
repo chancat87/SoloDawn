@@ -247,7 +247,7 @@ SoloDawn V1.0 经过一次**48 小时全自动、自修复的端到端测试**�
    - Rust 工具链 nightly-2025-12-04（rustup install nightly-2025-12-04）
    - Node.js >= 18 与 pnpm 10.13.1
    - Git
-   - Rust 后端编译所需的构建工具链：C/C++ 编译器、protoc 31.1、LLVM/libclang、以及（x86-64 上）cmake + nasm + perl（aws-lc-rs 需要）
+   - Rust 后端编译所需的构建工具链：C/C++ 编译器（Windows 上装免费的 Visual Studio 2022 生成工具 + "使用 C++ 的桌面开发" 工作负载即可，无需完整 Visual Studio IDE；Linux/macOS 用 gcc/clang）、protoc 31.1、LLVM/libclang、以及（x86-64 上）cmake + nasm + perl（aws-lc-rs 需要）
 2. cd SoloDawn && pnpm install
 3. 设置 32 字符的 SOLODAWN_ENCRYPTION_KEY 环境变量。
 4. pnpm run dev —— 首次启动会编译 Rust 后端（数分钟），随后前端 :23457 / 后端 :23456 提供服务。
@@ -377,6 +377,7 @@ export SOLODAWN_ENCRYPTION_KEY="你的32位加密密钥"
 
 以下问题在首次配置时最容易踩到（尤其是 Windows）：
 
+- **Windows：安装过程需要装 "Visual Studio" 相关组件是正常的。** Rust 在 Windows 上使用 MSVC 工具链，SQLite / libgit2 / AWS-LC 等原生依赖也要从源码编译 C/C++，因此需要微软的 C++ 生成工具。只需免费的 Visual Studio 2022 生成工具（Build Tools）+ "使用 C++ 的桌面开发" 工作负载即可——`scripts/setup-windows.ps1` 装的正是它，rustup 官方安装器也会提示安装；**不需要完整的 Visual Studio IDE**，已装任意版本 Visual Studio（含 C++ 工作负载）可直接复用。
 - **`protoc` 和 `libclang` 是构建必需项，但 `scripts/setup-windows.ps1` 不会安装。** 缺少 `protoc` 时，`crates/services`、`crates/runner`、`crates/feishu-connector` 无法构建（lockfile 中没有内置的 protoc）；缺少 `libclang` 时，`libsqlite3-sys` 会在 bindgen 运行时报错（由 sqlx 的 `sqlite-preupdate-hook` 特性触发）。安装命令见[前置要求](#前置要求)。
 - **`sqlx-cli` 必须锁定 0.8.x。** 最新的 0.9.0 需要 rustc ≥ 1.94，但项目锁定的 `nightly-2025-12-04` 是 rustc 1.93，不指定版本直接 `cargo install sqlx-cli` 会失败。
 - **构建不需要数据库。** `.cargo/config.toml` 设置了 `SQLX_OFFLINE=true`，构建会使用已提交的 `crates/db/.sqlx/` 查询缓存。只有在修改 SQL 查询或迁移时，才需要 `sqlx-cli` / `pnpm run prepare-db`。
