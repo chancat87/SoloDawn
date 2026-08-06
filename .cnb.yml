@@ -1,5 +1,6 @@
 main:
-  # CNB → GitHub：CNB main 每次有提交，立即同步 GitHub
+  # CNB → GitHub
+  # CNB main 有新提交时立即推送 GitHub
   push:
     - imports:
         - https://cnb.cool/huanchong-AI/solodawn-secrets/-/blob/main/github-sync.yml
@@ -13,32 +14,22 @@ main:
             username: ${GIT_USERNAME}
             password: ${GIT_ACCESS_TOKEN}
             branch: main
+            force: false
 
-  # GitHub → CNB：每 5 分钟由 CNB 主动检查 GitHub
+  # GitHub → CNB
+  # 每 5 分钟由 CNB 主动拉取一次 GitHub
   "crontab: */5 * * * *":
     - name: Sync GitHub main to CNB
 
+      imports:
+        - https://cnb.cool/huanchong-AI/solodawn-secrets/-/blob/main/github-sync.yml
+
       stages:
-        - name: Fetch GitHub main
-          script: |
-            set -eu
-
-            git remote remove github 2>/dev/null || true
-            git remote add github https://github.com/huanchong-99/SoloDawn.git
-
-            git fetch github main
-
-            git checkout main
-            git merge --ff-only github/main
-
-            # 如果 GitHub 没有比 CNB 更新，就直接结束
-            if [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]; then
-              echo "CNB and GitHub are already in sync."
-              exit 0
-            fi
-
-            # 使用 CNB 流水线自带的临时 Token 推回当前 CNB 仓库
-            git remote set-url origin "https://cnb:${CNB_TOKEN}@cnb.cool/huanchong-AI/solodawn"
-
-            # 更新 CNB，但不再次触发 CNB→GitHub 流水线，避免无意义循环
-            git push origin main -o ci.skip
+        - name: Pull GitHub main to CNB
+          image: tencentcom/git-sync
+          settings:
+            target_url: https://github.com/huanchong-99/SoloDawn.git
+            auth_type: https
+            username: ${GIT_USERNAME}
+            password: ${GIT_ACCESS_TOKEN}
+            sync_mode: pull
