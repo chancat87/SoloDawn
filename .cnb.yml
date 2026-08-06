@@ -1,0 +1,14 @@
+main:
+  push:
+    - imports:
+        - https://cnb.cool/huanchong-AI/solodawn-secrets/-/blob/main/github-sync.yml
+
+      stages:
+        - name: Sync main to GitHub
+          image: tencentcom/git-sync
+          settings:
+            target_url: https://github.com/huanchong-99/SoloDawn.git
+            auth_type: https
+            username: ${GIT_USERNAME}
+            password: ${GIT_ACCESS_TOKEN}
+            branch: main
