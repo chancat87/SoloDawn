@@ -1,4 +1,4 @@
-use std::{future::Future, str::FromStr};
+use std::str::FromStr;
 
 use db::models::{
     project::Project,
@@ -12,7 +12,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use rmcp::{
     ErrorData, ServerHandler,
-    handler::server::tool::{Parameters, ToolRouter},
+    handler::server::{tool::ToolRouter, wrapper::Parameters},
     model::{
         CallToolResult, Content, Implementation, ProtocolVersion, ServerCapabilities, ServerInfo,
     },
@@ -915,15 +915,10 @@ impl ServerHandler for TaskServer {
             instruction = format!("{context_instruction} {instruction}");
         }
 
-        ServerInfo {
-            protocol_version: ProtocolVersion::V_2025_03_26,
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            server_info: Implementation {
-                name: "solodawn".to_string(),
-                version: "1.0.0".to_string(),
-            },
-            instructions: Some(instruction),
-        }
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_protocol_version(ProtocolVersion::V_2025_03_26)
+            .with_server_info(Implementation::new("solodawn", "1.0.0"))
+            .with_instructions(instruction)
     }
 }
 
