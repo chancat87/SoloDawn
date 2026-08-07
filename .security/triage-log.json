@@ -1,6 +1,6 @@
 {
   "schema": "solodawn-security-triage-v1",
-  "updated_at": "2026-08-07T15:15:00Z",
+  "updated_at": "2026-08-07T18:15:00Z",
   "entries": {
     "audit:logging-filesystem-410": {
       "alert": "scripts/audit-security.sh 日志安全检查误报：crates/services/src/services/filesystem.rs:410 `tracing::trace!(\"Cancellation token triggered\")`",
@@ -27,10 +27,10 @@
       "date": "2026-08-07",
       "fix_plan": "low_risk, auto-merge eligible",
       "resolution": {
-        "status": "fix_pr_created",
+        "status": "merged",
         "pr_number": 10,
         "branch": "auto/security-fix-fasturi-9c39",
-        "detail": "PR #10 已创建（package.json overrides fast-uri 3.1.1→3.1.2 + pnpm-lock.yaml 同步，@rjsf/utils 与 ajv 两处依赖解析指向 3.1.2）。验证流水线已触发（sn=cnb-p08-1jvec8o94）。待人工审核合并，未自动合并。",
+        "detail": "PR #10 已合并至 main（merge commit d4c13863e）。当前 main 的 pnpm-lock.yaml 中 fast-uri 已解析为 3.1.2（pnpm-lock.yaml:3033 / 7209），CVE-2026-6322 已修复。CNB 侧告警 2085471183369043968 仍标记 open，但其 occur_version/revision 指向旧快照 078a3b1f，属扫描器未重扫；下轮复核可确认后由人工在 CNB 安全页关闭。",
         "date": "2026-08-07"
       }
     },
@@ -45,6 +45,21 @@
       "resolution": {
         "status": "blocked_no_viable_upgrade",
         "detail": "2026-08-07 复核：glib 0.18.5 已是 0.18 系列最终版，但上游 gtk 最大版本 0.18.2（约束 glib ^0.18）、libappindicator 0.9.0、tray-icon 0.19.3~0.24.2 全系列均约束 glib ^0.18；gtk 0.20+ 在 crates.io 不存在。glib 0.20.0 在当前依赖树中不可解析，无法生成有效自动修复 PR。仓库对 glib::VariantStrIter 无直接调用（仅经 tray-icon→libappindicator→gtk 传递引入，且仅 Linux 桌面托盘场景构建该链）。处置：维持 open 待人工/上游跟进，不创建无效修复 PR，不降低安全标准，不扩大忽略范围。",
+        "date": "2026-08-07"
+      }
+    },
+    "github-ci:sonarcloud-qualitygate": {
+      "alert": "GitHub SonarCloud Code Analysis check-run 持续 failure：Quality Gate failed（E Security Rating on New Code，required ≥ A，实测 new_security_rating=5）。New Code 范围 3 条 OPEN：docker:S8482（.ci/Dockerfile.security-verify:50，BLOCKER）、docker:S6471×2（两个 security Dockerfile 的 FROM node root 用户，MINOR）。",
+      "verdict": "ci_fix_confirmed",
+      "reason": "三处均位于仓库自身 CI/巡检构建镜像（.ci/Dockerfile.security-*），非对外服务：S8482 的 rustup-init 为官方签名安装器且已改为先下载到文件再执行；S6471 的 root 是工具链镜像构建的必要条件。均为有意为之，非真实可利用漏洞。但上一轮 519390c6f 使用的 '# NOSONAR(S6471)'/'# NOSONAR(S8482)' 圆括号语法不被 Sonar 识别且未紧邻被报告行，导致三条告警在 SonarCloud 仍为 OPEN，Quality Gate 持续失败，GitHub 侧 SonarCloud Code Analysis 变红。",
+      "basis": "SonarCloud project_status API（huanchong-99_GitCortex@main）确认 new_security_rating=5 ERROR；issues API sinceLeakPeriod 确认 3 条 OPEN；check-runs API 确认唯一失败项为 SonarCloud Code Analysis。",
+      "action": "创建修复分支 auto/sonar-nosonar-b34a：将两处 '# NOSONAR(S6471)' 改为紧邻 FROM 行的 '# NOSONAR'，S8482 说明注释改为紧邻 RUN 行的 '# NOSONAR' + 官方签名安装器说明。仅注释变更，不影响镜像构建产物。",
+      "date": "2026-08-07",
+      "resolution": {
+        "status": "fix_pr_created",
+        "pr_number": 15,
+        "branch": "auto/sonar-nosonar-b34a",
+        "detail": "PR #15 已创建（.ci/Dockerfile.security-patrol + .ci/Dockerfile.security-verify 注释修正）。验证流水线已触发（sn=cnb-6r8-1jvemksqo）。预期 SonarCloud 重扫后 Quality Gate 转绿；GitHub 侧 E2E(macos/windows) 为 in_progress（非失败）待其自行完成。",
         "date": "2026-08-07"
       }
     }
