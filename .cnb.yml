@@ -40,7 +40,8 @@
   stages:
     - name: Verify fix (collect + static + security audit)
       script: |
-        set -uo pipefail
+        # 注意：CNB script 由 /bin/sh (dash) 执行，不支持 bash 的 set -o pipefail
+        set -u
         bash scripts/security/collect-alerts.sh
         bash scripts/security/verify-fix.sh
     - name: AI independent security review
@@ -173,7 +174,8 @@ main:
       stages:
         - name: Collect CNB security alerts
           script: |
-            set -uo pipefail
+            # 注意：CNB script 由 /bin/sh (dash) 执行，不支持 bash 的 set -o pipefail
+            set -u
             bash scripts/security/collect-alerts.sh
             echo "---- alert summary ----"
             jq -c '{collected,total}' .security/alerts.json 2>/dev/null || true
