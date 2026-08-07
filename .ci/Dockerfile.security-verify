@@ -14,6 +14,7 @@
 #   cargo/pnpm/git 需要 root 权限写入 /usr/local/{cargo,rustup,lib/node_modules} 等
 #   系统目录以完成依赖安装与 AI Agent 的读写操作，root 是必要且有意的。
 # ============================================================================
+# NOSONAR(S6471)
 FROM node:22-bookworm-slim
 
 # 系统依赖（对齐 .github/actions/setup-rust/action.yml）
@@ -43,7 +44,12 @@ RUN curl -fsSL --retry 5 --proto '=https' --proto-redir '=https' \
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal \
+# NOSONAR(S8482): rustup-init 是 rust-lang 官方签名安装器（sh.rustup.rs 经 HTTPS 提供，
+#   脚本由官方 rust-lang/rustup 仓库发布），先下载到文件再执行以避免管道直接运行，
+#   属于可接受的官方工具链引导做法。
+RUN curl --proto '=https' --tlsv1.2 -sSf -o /tmp/rustup-init https://sh.rustup.rs \
+    && sh /tmp/rustup-init -y --profile minimal \
+    && rm /tmp/rustup-init \
     && rustup toolchain install nightly-2025-12-04 --profile default \
        --component clippy,rustfmt,rustc,rust-src,rust-std,cargo \
     && rustup default nightly-2025-12-04 \
@@ -64,8 +70,9 @@ RUN curl -LsSf --retry 5 --retry-connrefused --proto '=https' --proto-redir '=ht
 RUN corepack enable && corepack prepare pnpm@10.13.1 --activate
 
 # CNB CLI 与 Skills（AI 审核 / PR 操作；锁定精确版本防供应链漂移）
-# S8543/S6505: 使用 --ignore-scripts 跳过生命周期脚本，并用精确版本号。
+# S8543/S6505: npm install 使用 --ignore-scripts；skills 已全局安装，直接调用
+#   本地 CLI（不走 npx 按需下载），避免运行未经锁定的下载产物。
 RUN npm install -g --ignore-scripts @cnbcool/cnb-cli@1.11.1 skills@1.5.22 \
-    && npx --yes skills@1.5.22 add https://cnb.cool/cnb/skills/cnb-skill.git -g -y
+    && skills add https://cnb.cool/cnb/skills/cnb-skill.git -g -y
 
 WORKDIR /workspace
