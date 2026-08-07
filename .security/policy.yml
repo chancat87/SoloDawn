@@ -82,7 +82,9 @@ fix:
 
 # 自动合并条件（全部满足才允许 AI 自动合并到 main）
 auto_merge:
-  enabled: false              # 默认关闭（保守）；人工在评审后按需开启
+  # 全自动模式：默认开启。仅在全部条件满足时由 AI 审核 Agent 执行自动合并；
+  # 任何一项不确定 → 保留 PR 等待人工审核，绝不强并。
+  enabled: true
   only_when_all:              # 以下条件必须全部满足
     - vulnerability_confirmed      # 漏洞已被确认
     - fix_scope_clear_low_risk     # 修复范围明确且为低风险修改
@@ -94,6 +96,7 @@ auto_merge:
     - no_manual_judgement_needed   # 无需要人工判断的架构/权限/兼容性变化
   uncertainty_policy: >
     任何一项存在不确定性时，只创建/保留 PR 等待人工审核，不自动合并。
+  auto_cleanup_branches: true   # 合并后自动删除源分支，仓库只保留 main
 
 # 安全边界（对 AI Agent 的硬性约束）
 security_boundaries:

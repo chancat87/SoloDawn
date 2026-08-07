@@ -22,22 +22,36 @@ cd "$ROOT_DIR"
 RESULTS="${RESULTS:-.security/verify-results.json}"
 mkdir -p "$(dirname "$RESULTS")"
 
+# 与仓库 GitHub CI（.github/actions/setup-rust/action.yml）保持一致的构建环境变量：
+# aws-lc-sys 静态链接、libgit2 走 pkg-config、sqlx 离线（.sqlx/ 缓存）
+export AWS_LC_SYS_STATIC=1
+export AWS_LC_SYS_NO_PREGENERATED_SRC=1
+export LIBGIT2_SYS_USE_PKG_CONFIG=1
+export SQLX_OFFLINE=true
+
 start_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 report="{\"started_at\":\"$start_ts\",\"repo\":\"${CNB_REPO_SLUG:-}\",\"branch\":\"${CNB_BRANCH:-}\",\"checks\":{}}"
 
-# run_check <key> <desc> <cmd...>
+# run_check <key> <desc> [advisory] <cmd...>
+# 默认视为“硬性门禁”（hard gate）；若在 cmd 前标记 "advisory"，则该检查仅作参考
+# （不影响自动合并判定）。如 cargo_fmt：main 基线存在大量历史 fmt 差异，且 GitHub CI
+# 并不跑 fmt --check，故作为参考检查而非硬性门禁。
 run_check() {
   local key="$1" desc="$2"; shift 2
+  local gate="hard"
+  if [[ "$1" == "advisory" ]]; then
+    gate="advisory"; shift
+  fi
   echo "==> [$key] $desc"
   if "$@" > /tmp/verify-${key}.log 2>&1; then
-    report="$(echo "$report" | jq --arg k "$key" --arg d "$desc" \
-      '.checks[$k] = {description:$d, status:"passed", exit_code:0}')"
+    report="$(echo "$report" | jq --arg k "$key" --arg d "$desc" --arg g "$gate" \
+      '.checks[$k] = {description:$d, status:"passed", exit_code:0, gate:$g}')"
     echo "    -> passed"
   else
     local code=$?
-    report="$(echo "$report" | jq --arg k "$key" --arg d "$desc" --argjson c "$code" \
-      '.checks[$k] = {description:$d, status:"failed", exit_code:$c}')"
-    echo "    -> FAILED (exit=$code)"
+    report="$(echo "$report" | jq --arg k "$key" --arg d "$desc" --arg g "$gate" --argjson c "$code" \
+      '.checks[$k] = {description:$d, status:"failed", exit_code:$c, gate:$g}')"
+    echo "    -> FAILED (exit=$code) [${gate}]"
   fi
 }
 
@@ -58,7 +72,7 @@ CARGO_SELECT="--workspace --exclude solodawn-tray"
 if [[ "$HAVE_CARGO" == "1" ]]; then
   run_check cargo_check "cargo check (workspace, ci profile, locked)" \
     bash -c "cargo check $CARGO_SELECT --profile ci --locked"
-  run_check cargo_fmt "cargo fmt --check" \
+  run_check cargo_fmt "cargo fmt --check (advisory)" advisory \
     bash -c "cargo fmt --all -- --check"
   run_check cargo_clippy "cargo clippy (workspace, -D warnings)" \
     bash -c "cargo clippy $CARGO_SELECT --all-targets --all-features --profile ci --locked -- -D warnings"
@@ -83,10 +97,19 @@ else
 fi
 
 # 3) 前端检查（lint / 类型 / 测试）
+# 先安装前端依赖（与仓库 CI setup-frontend 一致），否则 eslint/vitest/tsc 缺失导致误报失败
 if [[ "$HAVE_PNPM" == "1" && -d frontend ]]; then
-  run_check frontend_lint "frontend lint" bash -c "cd frontend && pnpm run lint"
-  run_check frontend_typecheck "frontend type check" bash -c "cd frontend && pnpm run check"
-  run_check frontend_tests "frontend tests" bash -c "cd frontend && pnpm run test:run"
+  run_check frontend_install "pnpm install --frozen-lockfile" \
+    bash -c "cd frontend && pnpm install --frozen-lockfile"
+  if [[ "$(echo "$report" | jq -r '.checks.frontend_install.status // "failed"')" == "passed" ]]; then
+    run_check frontend_lint "frontend lint" bash -c "cd frontend && pnpm run lint"
+    run_check frontend_typecheck "frontend type check" bash -c "cd frontend && pnpm run check"
+    run_check frontend_tests "frontend tests" bash -c "cd frontend && pnpm run test:run"
+  else
+    skip_check frontend_lint "frontend lint" "frontend deps install failed"
+    skip_check frontend_typecheck "frontend type check" "frontend deps install failed"
+    skip_check frontend_tests "frontend tests" "frontend deps install failed"
+  fi
 else
   skip_check frontend_lint "frontend lint" "pnpm not installed"
   skip_check frontend_typecheck "frontend type check" "pnpm not installed"

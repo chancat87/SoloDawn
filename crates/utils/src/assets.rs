@@ -28,8 +28,8 @@ pub fn asset_dir() -> std::io::Result<std::path::PathBuf> {
             std::sync::OnceLock::new();
         let dir = NEXTEST_ASSET_DIR.get_or_init(|| {
             let run = std::env::var("NEXTEST_RUN_ID").unwrap_or_else(|_| "local".to_string());
-            let d = std::env::temp_dir()
-                .join(format!("solodawn-nextest-{run}-{}", std::process::id()));
+            let d =
+                std::env::temp_dir().join(format!("solodawn-nextest-{run}-{}", std::process::id()));
             // PIDs can be reused as test processes finish within a run; start clean.
             let _ = std::fs::remove_dir_all(&d);
             d

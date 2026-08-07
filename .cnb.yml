@@ -36,7 +36,9 @@
     wait: true
     cancel-in-wait: true
   env:
-    AUTO_MERGE_ENABLED: "false"   # 保守默认：不自动合并，等待人工审核
+    # 自动合并开关：仅在全部自动合并条件满足时由 AI 审核 Agent 执行合并。
+    # 任何一项不确定 → 保留 PR 等人工审核，绝不强并。
+    AUTO_MERGE_ENABLED: "true"
   stages:
     - name: Verify fix (collect + static + security audit)
       script: |
@@ -76,8 +78,11 @@
              - 过度修改：是否超出最小修复范围、删除正常功能、关闭安全检查、
                扩大白名单或降低安全标准。
           3. 读取 .security/verify-results.json：
-             - 任一硬性检查（cargo_check / cargo_clippy / frontend_lint / frontend_tests /
-               backend_tests / security_audit 等）failed，则不得判定为"可自动合并"；
+             - 仅以 gate=hard 的硬性检查作为自动合并门禁（cargo_check / cargo_clippy /
+               frontend_lint / frontend_tests / backend_tests / security_audit / frontend_install 等）；
+               任一硬性检查 failed，则不得判定为"可自动合并"；
+             - gate=advisory 的检查（如 cargo_fmt，main 基线本身未全绿且 GitHub CI 不跑 fmt）
+               仅供参考记录，不作为自动合并阻断条件；
              - 若存在 skipped 的硬性检查，视为"存在不确定性"，不得自动合并；
              - pr_ci_state 必须为 success；否则不得自动合并。
           4. 将审核结论写入 .security/auto-merge-decision.json，格式：
@@ -104,8 +109,12 @@
              - 你本次独立审核未发现新的高风险问题；
              - 无需要人工判断的架构/权限/兼容性变化。
              任何一项不满足或存在不确定性 → 只保留 PR 等待人工审核，绝不自动合并。
-          6. 在 PR 上留下审核评论（cnb pulls comment），说明审核结论与合并决策。
-          7. 最后用一段简洁中文总结：PR 编号、审核结论、是否自动合并、理由。
+          6. 合并后执行分支清理（仅当本次确实自动合并成功）：
+             - 用 cnb git delete-branch 删除本次修复分支 <当前分支>（源分支）；
+             - 用 cnb pulls list-pulls --state all 检查其他已合并/已关闭 PR 的源分支，
+               对不再需要的（已合并或已关闭）分支逐一删除，最终仓库只保留 main。
+          7. 在 PR 上留下审核评论（cnb pulls comment），说明审核结论与合并决策。
+          8. 最后用一段简洁中文总结：PR 编号、审核结论、是否自动合并、分支清理情况、理由。
     - name: Persist auto-merge decision (best effort)
       allowFailure: true
       script: |
@@ -155,6 +164,9 @@ main:
 
   # =========================================================================
   # 【新增】每小时安全巡检与修复流程（不依赖人工 / WebIDE / 常驻环境）
+  #   * 采集 CNB 安全告警
+  #   * 检查 CNB ↔ GitHub 同步状态与 GitHub CI 状态（对齐 github.com/.../commits/main 页面）
+  #   * AI 巡检 + 修复 + 自动验证 + 自动合并 + 分支清理（全自动循环）
   # =========================================================================
   "crontab: 0 * * * *":
     - name: Security Patrol (hourly)
@@ -179,6 +191,29 @@ main:
             bash scripts/security/collect-alerts.sh
             echo "---- alert summary ----"
             jq -c '{collected,total}' .security/alerts.json 2>/dev/null || true
+        - name: Check GitHub sync & CI status
+          script: |
+            set -u
+            # 读取内置变量，检查 GitHub main 是否与 CNB main 同步（无需密钥，只读公开仓库）
+            echo "CNB main sha: ${CNB_BRANCH_SHA:-unknown}"
+            GH_SHA=$(curl -fsSL --max-time 30 \
+              https://api.github.com/repos/huanchong-99/SoloDawn/commits/main \
+              2>/dev/null | jq -r '.sha // "unknown"' 2>/dev/null || echo "unknown")
+            echo "GitHub main sha: ${GH_SHA}"
+            if [ -n "${CNB_BRANCH_SHA:-}" ] && [ "${GH_SHA}" = "${CNB_BRANCH_SHA}" ]; then
+              echo "SYNC_STATUS=in_sync"
+            else
+              echo "SYNC_STATUS=out_of_sync"
+            fi
+            # 检查 GitHub 侧最近一次 main commit 的 CI 状态（check-runs）
+            GH_CI=$(curl -fsSL --max-time 30 \
+              "https://api.github.com/repos/huanchong-99/SoloDawn/commits/main/check-runs" \
+              2>/dev/null | jq -r '{total: .total_count, pending: ([.check_runs[] | select(.status != "completed")] | length), failed: ([.check_runs[] | select(.conclusion == "failure")] | length), success: ([.check_runs[] | select(.conclusion == "success")] | length)}' 2>/dev/null || echo "{}")
+            echo "GitHub CI: $(echo "${GH_CI}" | jq -c . 2>/dev/null || echo "unavailable")"
+            # 将同步/CI 状态写入快照，供后续 AI 巡检 Agent 读取
+            mkdir -p .security
+            echo "{\"checked_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\", \"cnb_main_sha\": \"${CNB_BRANCH_SHA:-unknown}\", \"github_main_sha\": \"${GH_SHA}\", \"github_ci\": $(echo "${GH_CI}" | jq -c . 2>/dev/null || echo "{}")}" > .security/github-status.json
+            echo "github-status.json written"
         - name: AI triage & fix
           type: npc:go
           options:
@@ -207,6 +242,7 @@ main:
               3. 既有判定记录：.security/triage-log.json（已处理过的告警直接复用结论，避免重复建 PR）
               4. 策略：.security/policy.yml 与 .security/README.md（必须读取）
               5. 仓库本地安全审计：可运行 bash scripts/audit-security.sh 作为补充
+              6. GitHub 同步/CI 状态快照：.security/github-status.json（含 CNB↔GitHub main sha 对比与 GitHub 侧 check-runs 状态）
 
               【验证规则】（最重要，逐条执行）
               - 不要因为扫描器标记"高危"就直接认定为真实漏洞；
@@ -229,22 +265,32 @@ main:
                    cnb build start-build --repo ${CNB_REPO_SLUG} --branch <修复分支> \
                      --event api_trigger_security_verify \
                      --env PR_NUMBER=<PR编号> --title "security verify for PR <编号>"
-                 - 不要在本次巡检中直接合并任何 PR。
+                 - 验证流水线在满足全部自动合并条件时会自动合并并清理分支，无需人工。
               C. 依赖漏洞等需要升级主版本/涉及架构或兼容性变化的修复：只创建 PR 并明确标注
                  "需人工判断"，不自动合并。
+
+              【GitHub 同步/CI 状态检查】（新增，对照 github.com/huanchong-99/SoloDawn/commits/main）
+              - 读取 .security/github-status.json：
+                * 若 cnb_main_sha != github_main_sha：说明 CNB↔GitHub 同步存在延迟/失败，
+                  不要急于在本轮内再叠加修复；等待下轮巡检自动同步后再复核。
+                * 若 github_ci 存在 failed 或 pending 的 check-run：将问题记录到巡检总结，
+                  若属于仓库代码/配置可修复项（如 SonarCloud 质量门禁、静态检查失败），
+                  按最小修改原则创建修复 PR（走 B 流程），确保 GitHub 侧也全绿。
+                * 若 github_ci 为空或不可达：记录为"无法读取 GitHub CI，待下轮复核"，不阻塞告警处置。
 
               【输出】最后用中文给出简洁总结：
               - 本次巡检发现的告警总数、逐条判定结果（误报/真实/待定）；
               - 创建的修复 PR 列表（编号、分支、标题、验证流水线触发情况）；
               - 误报记录更新情况；
+              - GitHub 同步/CI 状态检查结论；
               - 需要人工关注的遗留项。
 
 # ---------------------------------------------------------------------------
 # 安全修复分支（auto/security-fix-*）
 # 修复 PR 创建后由巡检 Agent 显式触发 api_trigger_security_verify：
-# 验证 + 独立审核 + 自动合并决策。
+# 验证 + 独立审核 + 自动合并 + 分支清理（全自动循环）。
 # ---------------------------------------------------------------------------
-"auto/security-fix-*":
+"$":
   api_trigger_security_verify:
     - name: Security Fix Verification (after PR)
       <<: *security-fix-verify
