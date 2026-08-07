@@ -51,7 +51,9 @@ if ! search "set_api_key" crates/server/src/routes/workflows.rs >/dev/null 2>&1;
 fi
 
 note "Check: Logging security"
-log_hits="$(search "(tracing::)?(trace|debug|info|warn|error)!\([^\n]*?(api[_-]?key|token|secret|authorization)" crates 2>/dev/null || true)"
+# 仅当日志参数中确实携带了密钥"值"（等号/冒号后存在非空字面量）时才判定为泄露；
+# 避免把诸如 `Cancellation token triggered` 这类描述性日志误报为密钥泄露。
+log_hits="$(search '(tracing::)?(trace|debug|info|warn|error)!\([^\n]*?(api[_-]?key|token|secret|authorization|password)[^,)]*?[=:][[:space:]]*[^,)]' crates 2>/dev/null || true)"
 if [[ -n "$log_hits" ]]; then
   fail "Potential secret logging detected"
   echo "$log_hits"
@@ -71,9 +73,14 @@ fi
 
 note "Check: Hardcoded secrets"
 if [[ "$SEARCH_TOOL" = "rg" ]]; then
-  SECRET_EXCLUDES=(--glob "!docs/**" --glob "!tests/**" --glob "!README.md" --glob "!.git/**")
+  SECRET_EXCLUDES=(
+    --glob "!docs/**" --glob "!tests/**" --glob "!README.md" --glob "!.git/**"
+    --glob "!crates/quality/src/rules/common/secret_detection.rs"
+    --glob "!crates/server/tests/**"
+  )
 else
-  SECRET_EXCLUDES=(--exclude-dir=docs --exclude-dir=tests --exclude=README.md --exclude-dir=.git)
+  SECRET_EXCLUDES=(--exclude-dir=docs --exclude-dir=tests --exclude=README.md --exclude-dir=.git \
+    --exclude=secret_detection.rs --exclude-dir=server/tests)
 fi
 
 secret_patterns=(

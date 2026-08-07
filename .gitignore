@@ -111,5 +111,12 @@ quality-report-*.md
 test_task.json
 test-screenshots/
 
+# CNB 安全巡检构建期产物（由流水线生成，不入库）
+.security/alerts.json
+.security/alerts-summary.json
+.security/verify-results.json
+.security/auto-merge-decision.json
+.security/tmp-*.json
+
 # Locally-provisioned build tooling (protoc, etc.)
 .tooling/

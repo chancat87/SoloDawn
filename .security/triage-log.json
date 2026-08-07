@@ -1,0 +1,40 @@
+{
+  "schema": "solodawn-security-triage-v1",
+  "updated_at": "2026-08-07T00:00:00Z",
+  "entries": {
+    "audit:logging-filesystem-410": {
+      "alert": "scripts/audit-security.sh 日志安全检查误报：crates/services/src/services/filesystem.rs:410 `tracing::trace!(\"Cancellation token triggered\")`",
+      "verdict": "false_positive",
+      "reason": "该行只是日志描述文本（'Cancellation token triggered'），并未携带任何密钥值。原审计脚本的正则过于宽泛，把包含 'token' 单词的日志参数一律视为密钥泄露。",
+      "basis": "结合源码上下文，该 trace 日志参数为固定字符串字面量，不含变量或密钥值；无信息泄露风险。",
+      "action": "修正审计工具正则：仅当日志参数中确实携带密钥'值'（等号/冒号后存在非空字面量）时才判定为泄露。未修改任何业务代码。",
+      "date": "2026-08-07"
+    },
+    "audit:secret-test-fixtures": {
+      "alert": "scripts/audit-security.sh 硬编码密钥检查误报：crates/quality/src/rules/common/secret_detection.rs 与 crates/server/tests/security/log_sanitization_test.rs 中的占位密钥（AKIA…、ghp_…、sk-…、xoxb-…、AIza…）",
+      "verdict": "false_positive",
+      "reason": "这些文件是仓库自带的'秘密检测规则'与'日志脱敏'功能的单元测试/测试夹具，其中的字符串是刻意构造的占位示例，用于验证检测与脱敏逻辑本身，并非真实密钥。",
+      "basis": "文件路径位于 tests/ 与规则实现自身的 #[cfg(test)] 模块内；字符串均为文档化示例值（AKIAIOSFODNN7…、ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ… 等，来自 AWS/GitHub 官方文档示例）。",
+      "action": "在审计工具扫描中精确排除这两个测试夹具文件（最小范围），不修改任何业务代码。",
+      "date": "2026-08-07"
+    },
+    "cnb:2085471183369043968": {
+      "alert": "CNB 高危依赖漏洞：fast-uri@3.1.1（CVE-2026-6322，pnpm-lock.yaml:3033）",
+      "verdict": "confirmed_real",
+      "reason": "fast-uri normalize() 在解析百分号编码的 authority 分隔符时存在缺陷，可导致 host 校验绕过（SSRF/重定向校验风险）。该依赖经 ajv@8.17.1、@rjsf/utils@6.1.1 等被前端依赖链引入。",
+      "basis": "上游 advisory 明确受影响版本 <=3.1.1，fixed 版本 3.1.2；本仓库锁文件中 fast-uri 为 3.1.1。",
+      "action": "由每小时巡检流程生成低风险修复 PR（package.json overrides 3.1.1 → 3.1.2 + 锁文件更新），范围极小。",
+      "date": "2026-08-07",
+      "fix_plan": "low_risk, auto-merge eligible"
+    },
+    "cnb:2085471182022676480": {
+      "alert": "CNB 中危依赖漏洞：glib@0.18.5（GHSA-wrw7-89jp-8q8g，Cargo.lock:2432）",
+      "verdict": "confirmed_real_requires_human",
+      "reason": "glib::VariantStrIter 的 Iterator 实现存在 unsoundness（UB / NULL 指针解引用），fixed 版本为 0.20.0。但 0.18.5 → 0.20.0 为主版本升级，涉及 tray/GTK 相关 crate（atk/cairo-rs/gdk/gio/gtk/libappindicator/pango 等依赖链）。",
+      "basis": "上游 advisory 确认问题；升级跨度为主版本，存在 API/兼容性变化风险，可能影响 Linux 托盘/桌面集成功能。",
+      "action": "仅创建 PR 并明确标注'需人工判断'，不自动合并。",
+      "date": "2026-08-07",
+      "fix_plan": "major_version_upgrade, requires_human_judgement"
+    }
+  }
+}

@@ -1,6 +1,125 @@
+# ============================================================================
+# SoloDawn CNB 云原生构建配置
+#
+# 本文件在保留既有 GitHub ↔ CNB 同步流程（main: push / crontab */5）的基础上，
+# 新增一套每小时自动化的「CNB 云原生安全巡检与修复」流程：
+#
+#   1) main 分支每小时（crontab: 0 * * * *）执行安全巡检：
+#      - collect-alerts.sh 采集 CNB「安全」能力与当前仓库可获取的安全告警；
+#      - npc:go AI 巡检 Agent 结合源码逐条验证告警（防止仅凭扫描器/关键词误判），
+#        误报记录到 .security/triage-log.json；真实漏洞创建独立分支+独立 PR，
+#        并触发下方验证流水线。
+#   2) auto/security-fix-* 分支的 api_trigger_security_verify 事件执行修复验证：
+#      - 运行与修改相关的构建/静态检查/安全审计（verify-fix.sh）；
+#      - npc:go 独立复核 PR 变更（安全回归/功能回归/过度修改）；
+#      - 仅当 AUTO_MERGE_ENABLED=true 且全部自动合并条件满足时才合并，否则保留人工审核。
+#
+# 安全边界：本配置不导入任何密钥仓库（巡检只使用内置 CNB_TOKEN），
+# 不触碰 solodawn-secrets；禁止 force push、禁止改写历史。
+# ============================================================================
+
+# ---------------------------------------------------------------------------
+# 共享片段：安全修复验证流水线（push / api_trigger 复用）
+# 以 "." 开头避免被识别为分支名
+# ---------------------------------------------------------------------------
+.x-security-fix-verify: &security-fix-verify
+  runner:
+    cpus: 8
+  docker:
+    build:
+      dockerfile: .ci/Dockerfile.security-verify
+      by: [".ci/Dockerfile.security-verify"]
+      versionBy: [".ci/Dockerfile.security-verify", ".security/policy.yml", "scripts/security/verify-fix.sh"]
+  # 同一修复分支的验证串行执行，避免重复验证并发
+  lock:
+    key: security-fix-verify-${CNB_BRANCH}
+    wait: true
+    cancel-in-wait: true
+  env:
+    AUTO_MERGE_ENABLED: "false"   # 保守默认：不自动合并，等待人工审核
+  stages:
+    - name: Verify fix (collect + static + security audit)
+      script: |
+        set -uo pipefail
+        bash scripts/security/collect-alerts.sh
+        bash scripts/security/verify-fix.sh
+    - name: AI independent security review
+      type: npc:go
+      options:
+        maxTurns: 40
+        systemPrompt: |
+          你是 SoloDawn 仓库安全修复 PR 的独立代码审核 Agent。
+          必须遵守仓库根目录 .security/policy.yml 中的全部策略，尤其是：
+          - 禁止读取、打印或提交任何 Token / API Key / Cookie / 密码等密钥；
+          - 禁止修改 CNB/GitHub 密钥仓库（solodawn-secrets）中的凭证；
+          - 禁止执行与当前仓库安全修复无关的外部操作；
+          - 禁止 force push main、禁止修改或删除既有提交历史。
+          你只对当前安全修复 PR 做最小范围复核，不做任何无关修改。
+        userPrompt: |
+          请对当前安全修复变更执行一次"独立"代码审核（区别于创建该 PR 的巡检 Agent）。
+
+          背景与输入：
+          - 策略文件：.security/policy.yml（必须读取并严格遵守）
+          - 告警采集结果：.security/alerts.json
+          - 验证结果：.security/verify-results.json（构建期生成，已在本工作区）
+          - 当前分支：${CNB_BRANCH}
+          - 若环境变量 PR_NUMBER 存在，则为该 PR；否则用 cnb pulls list-pulls 查找
+            当前分支对应的 open PR。
+
+          步骤：
+          1. 用 cnb 命令获取该 PR 的详情与变更文件（cnb pulls get、cnb pulls get-pr-files），
+             并结合告警详情（.security/alerts.json）核对修复是否针对原始告警。
+          2. 逐文件检查变更，重点：
+             - 安全回归：是否引入新的命令注入/路径穿越/权限绕过/硬编码密钥/敏感泄露等；
+             - 功能回归：是否改变无关功能、接口行为或项目架构；
+             - 过度修改：是否超出最小修复范围、删除正常功能、关闭安全检查、
+               扩大白名单或降低安全标准。
+          3. 读取 .security/verify-results.json：
+             - 任一硬性检查（cargo_check / cargo_clippy / frontend_lint / frontend_tests /
+               backend_tests / security_audit 等）failed，则不得判定为"可自动合并"；
+             - 若存在 skipped 的硬性检查，视为"存在不确定性"，不得自动合并；
+             - pr_ci_state 必须为 success；否则不得自动合并。
+          4. 将审核结论写入 .security/auto-merge-decision.json，格式：
+             {
+               "pr": <PR编号>, "branch": <当前分支>,
+               "vulnerability_confirmed": true/false,
+               "fix_scope_clear_low_risk": true/false,
+               "all_tests_passed": true/false,
+               "build_passed": true/false,
+               "static_checks_passed": true/false,
+               "security_checks_passed": true/false,
+               "self_review_no_high_risk": true/false,
+               "no_manual_judgement_needed": true/false,
+               "all_conditions_met": true/false,
+               "auto_merge_enabled": <环境变量 AUTO_MERGE_ENABLED 是否为 true>,
+               "decision": "auto_merge" | "wait_for_human" | "reject",
+               "reason": "<判断依据>"
+             }
+          5. 合并判定（仅当以下全部满足才调用 cnb pulls merge-pull 执行自动合并）：
+             - AUTO_MERGE_ENABLED 环境变量为 "true"；
+             - vulnerability_confirmed=true 且 fix_scope_clear_low_risk=true；
+             - verify-results.json 中全部硬性检查 passed 且无 skipped；
+             - verify-results.json 中 pr_ci_state == "success"；
+             - 你本次独立审核未发现新的高风险问题；
+             - 无需要人工判断的架构/权限/兼容性变化。
+             任何一项不满足或存在不确定性 → 只保留 PR 等待人工审核，绝不自动合并。
+          6. 在 PR 上留下审核评论（cnb pulls comment），说明审核结论与合并决策。
+          7. 最后用一段简洁中文总结：PR 编号、审核结论、是否自动合并、理由。
+    - name: Persist auto-merge decision (best effort)
+      allowFailure: true
+      script: |
+        mkdir -p .security
+        if [ -f .security/auto-merge-decision.json ]; then
+          echo "auto-merge decision recorded"
+          cat .security/auto-merge-decision.json
+        fi
+
+# ---------------------------------------------------------------------------
+# main 分支
+# ---------------------------------------------------------------------------
 main:
   # CNB → GitHub
-  # CNB main 有新提交时立即推送 GitHub
+  # CNB main 有新提交时立即推送 GitHub（既有流程，保持不变）
   push:
     - imports:
         - https://cnb.cool/huanchong-AI/solodawn-secrets/-/blob/main/github-sync.yml
@@ -17,10 +136,9 @@ main:
             force: false
 
   # GitHub → CNB
-  # 每 5 分钟由 CNB 主动拉取一次 GitHub
+  # 每 5 分钟由 CNB 主动拉取一次 GitHub（既有流程，保持不变）
   "crontab: */5 * * * *":
     - name: Sync GitHub main to CNB
-
       imports:
         - https://cnb.cool/huanchong-AI/solodawn-secrets/-/blob/main/github-sync.yml
 
@@ -33,3 +151,98 @@ main:
             username: ${GIT_USERNAME}
             password: ${GIT_ACCESS_TOKEN}
             sync_mode: pull
+
+  # =========================================================================
+  # 【新增】每小时安全巡检与修复流程（不依赖人工 / WebIDE / 常驻环境）
+  # =========================================================================
+  "crontab: 0 * * * *":
+    - name: Security Patrol (hourly)
+      # 防止巡检相互重叠：同一时间只保留最新一次巡检
+      lock:
+        key: security-patrol-hourly
+        wait: true
+        cancel-in-wait: true
+      runner:
+        cpus: 4
+      docker:
+        build:
+          dockerfile: .ci/Dockerfile.security-patrol
+          by: [".ci/Dockerfile.security-patrol"]
+          versionBy: [".ci/Dockerfile.security-patrol", ".security/policy.yml"]
+      # 安全边界：本流水线不导入任何密钥仓库，巡检只使用内置 CNB_TOKEN
+      stages:
+        - name: Collect CNB security alerts
+          script: |
+            set -uo pipefail
+            bash scripts/security/collect-alerts.sh
+            echo "---- alert summary ----"
+            jq -c '{collected,total}' .security/alerts.json 2>/dev/null || true
+        - name: AI triage & fix
+          type: npc:go
+          options:
+            maxTurns: 80
+            systemPrompt: |
+              你是 SoloDawn 仓库的自动化安全巡检 Agent，运行在 CNB 云原生构建流水线中。
+
+              必须遵守 .security/policy.yml 的全部策略，核心红线：
+              - 禁止读取、打印或提交任何 Token / API Key / Cookie / 密码等密钥；
+              - 禁止修改 CNB/GitHub 密钥仓库（solodawn-secrets）中的凭证；
+              - 禁止执行与当前仓库安全修复无关的外部操作；
+              - 禁止 force push main、禁止修改或删除既有提交历史；
+              - 禁止删除正常功能、关闭安全检查、扩大白名单或降低安全标准来规避告警；
+              - 禁止把 admin / password / token / localhost / test 等关键词一概判定为漏洞
+                或一概加入忽略列表。
+
+              你有 Shell 与 git 权限，可调用 cnb 命令（issues / pulls / build / repo-code-issue 等），
+              可加载本镜像内置的 cnb-api、cnb-code-commit、cnb-pipeline、cnb-code-review、
+              cnb-pr-diff 等 skill 并按其规范执行。
+            userPrompt: |
+              请对当前仓库执行一次安全告警巡检与处置。当前分支为 ${CNB_BRANCH}，仓库 ${CNB_REPO_SLUG}。
+
+              【输入】
+              1. 告警快照：.security/alerts.json（CNB 安全能力采集结果，含 rule / 风险等级 / 文件 / 行号 / 描述 / 详情链接）
+              2. 概览：.security/alerts-summary.json
+              3. 既有判定记录：.security/triage-log.json（已处理过的告警直接复用结论，避免重复建 PR）
+              4. 策略：.security/policy.yml 与 .security/README.md（必须读取）
+              5. 仓库本地安全审计：可运行 bash scripts/audit-security.sh 作为补充
+
+              【验证规则】（最重要，逐条执行）
+              - 不要因为扫描器标记"高危"就直接认定为真实漏洞；
+              - 不要仅依赖关键词（admin / password / token / localhost / test 等）判断；
+              - 对每条新告警，结合实际源码、调用路径、数据流、配置与可利用条件确认。
+                例如：依赖漏洞需检查 Cargo.lock / pnpm-lock.yaml 与上游 advisory 的 fixed 版本、
+                实际依赖链与受影响代码路径；敏感信息告警需区分测试夹具/占位符/示例/文档与真实密钥。
+
+              【处置】
+              A. 判定为误报 / 测试代码 / 示例配置 / 本地开发用途 / 无真实安全影响：
+                 - 不要修改业务代码；
+                 - 将结论写入 .security/triage-log.json（含告警 id、误报原因、判断依据、日期）；
+                 - 通过独立小 PR（docs 类型，base=main）提交 triage-log 更新（若无法直接推送 main 则建 PR）。
+              B. 确认真实漏洞：
+                 - 按 cnb-code-commit skill 流程：创建独立分支 auto/security-fix-<关键词>-<4位随机>，
+                   做最小化修复（不改变无关功能/接口/架构），提交并推送；
+                 - 创建独立 PR（base=main），PR 中必须包含：
+                   原始告警；是否确认可利用；根因；修改内容；影响范围；测试和验证结果；
+                 - PR 创建后，触发验证流水线（必须执行，不可跳过）：
+                   cnb build start-build --repo ${CNB_REPO_SLUG} --branch <修复分支> \
+                     --event api_trigger_security_verify \
+                     --env PR_NUMBER=<PR编号> --title "security verify for PR <编号>"
+                 - 不要在本次巡检中直接合并任何 PR。
+              C. 依赖漏洞等需要升级主版本/涉及架构或兼容性变化的修复：只创建 PR 并明确标注
+                 "需人工判断"，不自动合并。
+
+              【输出】最后用中文给出简洁总结：
+              - 本次巡检发现的告警总数、逐条判定结果（误报/真实/待定）；
+              - 创建的修复 PR 列表（编号、分支、标题、验证流水线触发情况）；
+              - 误报记录更新情况；
+              - 需要人工关注的遗留项。
+
+# ---------------------------------------------------------------------------
+# 安全修复分支（auto/security-fix-*）
+# 修复 PR 创建后由巡检 Agent 显式触发 api_trigger_security_verify：
+# 验证 + 独立审核 + 自动合并决策。
+# ---------------------------------------------------------------------------
+"auto/security-fix-*":
+  api_trigger_security_verify:
+    - name: Security Fix Verification (after PR)
+      <<: *security-fix-verify

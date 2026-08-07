@@ -1,0 +1,47 @@
+# ============================================================================
+# .ci/Dockerfile.security-verify
+#
+# 供 CNB 安全修复验证流水线（api_trigger_security_verify）使用的运行环境镜像：
+#   * 完整 Rust nightly 工具链（与仓库 rust-toolchain.toml 一致）+ clippy/rustfmt；
+#   * cargo-nextest（与仓库 CI 一致的测试运行器）；
+#   * Node + pnpm（前端 lint/check/test）；
+#   * CNB CLI 与 Skills（AI 独立审核、PR 操作）；
+#   * jq / curl / git / ripgrep（告警采集与验证脚本）。
+#
+# 构建：由 .cnb.yml 中 docker.build 动态构建并缓存到制品库（按版本哈希复用）。
+# 安全：不包含任何密钥；密钥一律通过 imports 注入。
+# ============================================================================
+FROM node:22-bookworm-slim
+
+# 系统依赖（对齐 .github/actions/setup-rust/action.yml）
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       pkg-config libsqlite3-dev libgit2-dev zlib1g-dev cmake ninja-build \
+       clang libclang-dev perl nasm libssl-dev protobuf-compiler \
+       ca-certificates git git-lfs curl jq ripgrep \
+    && rm -rf /var/lib/apt/lists/* \
+    && git lfs install
+
+# Rust 工具链（nightly，与 rust-toolchain.toml 保持一致）
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal \
+    && rustup toolchain install nightly-2025-12-04 --profile default \
+       --component clippy,rustfmt,rustc,rust-src,rust-std,cargo \
+    && rustup default nightly-2025-12-04 \
+    && rustup component add clippy rustfmt
+
+# cargo-nextest（与仓库 CI 版本一致 0.9.88）
+RUN curl -LsSf --retry 5 --retry-connrefused --proto '=https' --proto-redir '=https' \
+      https://get.nexte.st/0.9.88/linux | tar zxf - -C /usr/local/bin \
+    && cargo-nextest --version
+
+# pnpm（仓库 packageManager 为 pnpm@10.13.1）
+RUN corepack enable && corepack prepare pnpm@10.13.1 --activate
+
+# CNB CLI 与 Skills（AI 审核 / PR 操作）
+RUN npm install -g @cnbcool/cnb-cli skills \
+    && npx skills add https://cnb.cool/cnb/skills/cnb-skill.git -g -y
+
+WORKDIR /workspace

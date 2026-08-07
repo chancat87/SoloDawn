@@ -1,0 +1,105 @@
+# ============================================================================
+# SoloDawn CNB 云原生安全巡检与修复策略（Security Patrol Policy）
+#
+# 本文件是自动安全巡检/修复流程的"策略源"，供流水线中的 AI Agent
+# （npc:go）读取并严格遵循。人工评审与修改也以此为准。
+# ============================================================================
+
+# 巡检调度（与 .cnb.yml 中 crontab 保持一致）
+schedule:
+  cron: "0 * * * *"          # 每小时整点执行一次
+  trigger: "CNB 云原生构建 crontab 事件（无需人工 / WebIDE / 常驻环境）"
+
+# 告警采集
+collect:
+  alerts_file: .security/alerts.json          # 采集结果（构建期生成，不入库）
+  summary_file: .security/alerts-summary.json # 概览（构建期生成，不入库）
+  sources:
+    - CNB 安全页面：代码漏洞 / 敏感信息 / 代码问题 / 许可证 / SBOM / Skill 扫描
+    - repo-code-issue API（当前仓库可获取的代码扫描问题列表与详情）
+    - 仓库本地安全审计：scripts/audit-security.sh
+
+# 验证规则
+verify:
+  run_relevant_tests: true      # 修复后必须运行与修改相关的测试
+  run_build: true               # 运行仓库现有构建检查
+  run_static_checks: true       # cargo clippy / 前端 lint 与类型检查
+  run_security_audit: true      # scripts/audit-security.sh + 质量门禁
+  require_all_green: true       # 任一硬性检查失败 → 不允许自动合并
+  results_file: .security/verify-results.json  # 构建期生成，不入库
+
+# 误报 / 告警判定（核心原则）
+triage:
+  # 禁止：仅因关键词（admin / password / token / localhost / test …）直接判定为漏洞
+  # 禁止：扫描器标记"高危"就直接认定为真实漏洞
+  # 必须：结合具体代码、调用路径、配置与真实可利用条件逐条确认
+  false_positive_examples:
+    - "单元测试 / 测试夹具中的占位密钥（如 secret_detection.rs 的测试样例）"
+    - "日志脱敏测试中的伪造头（如 log_sanitization_test.rs）"
+    - "示例配置、本地开发用途、文档说明"
+    - "无真实攻击面或不可达代码路径"
+  record_to: .security/triage-log.json   # 误报记录（入库，供审计与去重）
+
+# 抑制（忽略告警）规则
+suppression:
+  enabled: true
+  min_scope_only: true        # 只允许针对"单条告警记录"的最小范围抑制
+  forbidden:                  # 以下做法一律禁止
+    - "为消除告警而大范围关闭扫描规则 / 禁用扫描器"
+    - "把 admin / password / token 等关键词一概加入忽略列表"
+    - "修改扫描配置以降低安全标准"
+  note: >
+    CNB 当前 OpenAPI 未提供代码扫描告警的"忽略"接口（仅列表/详情），
+    因此自动流程以 .security/triage-log.json 记录误报判定与依据；
+    若后续平台开放单条记录的精确忽略能力，可对该记录做最小范围抑制。
+
+# 真实漏洞修复规则
+fix:
+  branch_prefix: auto/security-fix-      # 每条修复创建独立分支
+  one_pr_per_fix: true                   # 每条真实修复创建独立 PR
+  minimal_change: true                   # 最小修改，不改变无关功能/接口/架构
+  forbidden:                             # 禁止通过以下手段规避告警
+    - "删除正常功能"
+    - "关闭安全检查"
+    - "扩大白名单"
+    - "降低安全标准"
+  focus_areas:
+    - 命令注入
+    - 路径穿越
+    - 权限绕过
+    - 认证/授权问题
+    - 硬编码密钥
+    - 敏感信息泄露
+    - 不安全默认配置
+    - 依赖漏洞 / 供应链风险
+  pr_body_required:
+    - 原始告警
+    - 是否确认可利用
+    - 根因
+    - 修改内容
+    - 影响范围
+    - 测试和验证结果
+
+# 自动合并条件（全部满足才允许 AI 自动合并到 main）
+auto_merge:
+  enabled: false              # 默认关闭（保守）；人工在评审后按需开启
+  only_when_all:              # 以下条件必须全部满足
+    - vulnerability_confirmed      # 漏洞已被确认
+    - fix_scope_clear_low_risk     # 修复范围明确且为低风险修改
+    - all_tests_passed             # 所有相关测试通过
+    - build_passed                 # 构建通过
+    - static_checks_passed         # 静态检查通过
+    - security_checks_passed       # 安全检查通过
+    - self_review_no_high_risk     # 独立代码审核未发现新的高风险问题
+    - no_manual_judgement_needed   # 无需要人工判断的架构/权限/兼容性变化
+  uncertainty_policy: >
+    任何一项存在不确定性时，只创建/保留 PR 等待人工审核，不自动合并。
+
+# 安全边界（对 AI Agent 的硬性约束）
+security_boundaries:
+  - 禁止读取、打印或提交 Token / API Key / Cookie / 密码等密钥
+  - 禁止修改 CNB/GitHub 密钥仓库（如 solodawn-secrets）中的凭证
+  - 禁止执行与当前仓库安全修复无关的外部操作
+  - 禁止 force push main
+  - 禁止修改或删除既有提交历史
+  - 涉及密钥操作的任务仅允许在可信事件（push / crontab / api_trigger 等）中执行
