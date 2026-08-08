@@ -71,6 +71,10 @@ const CLAUDE_BYPASS_ACCEPT_RETRY_MAX_AGE_SECS: u64 = 8;
 /// Limit retry count to avoid repeated accidental injections.
 const CLAUDE_BYPASS_ACCEPT_MAX_RETRIES: u8 = 1;
 
+/// Answer to a cold-start folder-trust modal: affirmative option + confirm.
+/// See [`is_trust_folder_prompt`] for why this must be answered automatically.
+const TRUST_FOLDER_ACCEPT_RESPONSE: &str = "1\r";
+
 /// [E26-09] Hardcoded response for the Claude bypass permissions menu.
 /// This assumes "Yes, I accept" is always the second item (`2`) in the
 /// rendered menu. If Claude CLI ever reorders or rewords the menu this
@@ -162,6 +166,12 @@ static CLAUDE_BYPASS_NO_EXIT_RE: Lazy<Regex> = Lazy::new(|| {
 /// - "Yes I accept"
 static CLAUDE_BYPASS_YES_ACCEPT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)\byes\s*,?\s*i\s*accept\b").expect("CLAUDE_BYPASS_YES_ACCEPT_RE must compile")
+});
+
+/// Numbered affirmative option in a folder-trust modal — "1. Yes, continue"
+/// (codex) or "1. Yes, I trust this folder" (claude).
+static TRUST_FOLDER_YES_OPTION_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)\b1\s*[.):]\s*yes\b").expect("TRUST_FOLDER_YES_OPTION_RE must compile")
 });
 
 /// Notepad launch/open prompt seen in headless Codex flows on Windows.
@@ -384,6 +394,47 @@ fn has_claude_bypass_accept_menu_text(lower: &str) -> bool {
 fn is_claude_bypass_accept_prompt(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     has_claude_bypass_accept_menu_text(&lower)
+}
+
+/// True when the CLI is showing its cold-start "do you trust this folder?" modal.
+///
+/// Both installed CLIs open with one in a directory they have not seen before —
+/// verified against the real binaries via `tests/cli_tui_readiness_probe.rs`:
+///
+/// * codex 0.144.5 — "Trusting the directory allows project-local config, hooks,
+///   and exec policies to load." / "1. Yes, continue" / "2. No, quit"
+/// * claude 2.1.223 — "1. Yes, I trust this folder" / "2. No, exit"
+///
+/// This modal owns the keyboard until it is answered, so the instruction
+/// SoloDawn types 2s after spawn is swallowed by it and never reaches the
+/// composer: the CLI then sits idle at an empty prompt while the workflow
+/// happily advances. That is the zero-artifact failure reported for
+/// claude-code and codex terminals, reproduced end-to-end by
+/// `probe_codex_dispatch` / `probe_claude_dispatch` (marker never echoed, file
+/// never created, modal on screen).
+///
+/// Requires both a folder-trust phrase and a numbered affirmative option so
+/// prose that merely mentions trust cannot trigger it.
+fn is_trust_folder_prompt(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    let asks_about_this_folder = lower.contains("trust this folder")
+        || lower.contains("trust the files in this folder")
+        || lower.contains("trusting the directory");
+    asks_about_this_folder && TRUST_FOLDER_YES_OPTION_RE.is_match(&lower)
+}
+
+/// Answer for [`is_trust_folder_prompt`]: pick the affirmative option and confirm.
+///
+/// Both CLIs put the affirmative at index 1 and accept the numeric shortcut.
+/// Trusting is the correct answer here and not a widening of privilege:
+/// SoloDawn resolved (and for new projects created) this working directory
+/// itself, and the operator launched an agent against it — declining just
+/// deadlocks the terminal at the modal.
+fn trust_folder_accept_response() -> (&'static str, &'static str) {
+    (
+        TRUST_FOLDER_ACCEPT_RESPONSE,
+        "answer the cold-start folder-trust modal so the composer becomes reachable",
+    )
 }
 
 /// [G19-010] The numeric shortcut "2\r" assumes "Yes, I accept" is always the
@@ -1464,6 +1515,56 @@ next_action: handoff\n"
             )
             .await;
             return;
+        }
+
+        // Cold-start folder-trust modal. Must be handled before anything else:
+        // until it is answered the CLI's composer does not exist, so the
+        // dispatched instruction is swallowed and the terminal produces nothing.
+        if state.auto_confirm
+            && !state.should_debounce()
+            && is_trust_folder_prompt(&normalized_output)
+        {
+            let (response, action) = trust_folder_accept_response();
+            let decision = PromptDecision::LLMDecision {
+                response: response.to_string(),
+                reasoning: action.to_string(),
+                target_index: Some(0),
+            };
+            let detected_prompt =
+                DetectedPrompt::new(PromptKind::Choice, normalized_output.clone(), 0.95);
+
+            if state.state_machine.should_process(&detected_prompt) {
+                state.last_detection = Some(Instant::now());
+                state.state_machine.on_prompt_detected(detected_prompt);
+                state.state_machine.on_response_sent(decision.clone());
+                state.detector.clear_buffer();
+
+                let response_terminal_id = state.terminal_id.clone();
+                let response_session_id = state.session_id.clone();
+
+                tracing::info!(
+                    terminal_id = %response_terminal_id,
+                    session_id = %response_session_id,
+                    action = %action,
+                    "Detected cold-start folder-trust modal (chunk); answering so the composer becomes reachable"
+                );
+
+                drop(terminals);
+                self.send_claude_bypass_accept_with_fallback(
+                    &response_terminal_id,
+                    &response_session_id,
+                    response,
+                    decision,
+                    "chunk",
+                    false,
+                )
+                .await;
+                return;
+            }
+            tracing::debug!(
+                terminal_id = %state.terminal_id,
+                "Skipping duplicate folder-trust modal answer"
+            );
         }
 
         // Chunk-level fallback: Claude bypass-permissions acceptance prompt.
@@ -2826,6 +2927,58 @@ mod tests {
         let message_bus = Arc::new(MessageBus::new(100));
         let process_manager = Arc::new(ProcessManager::new());
         PromptWatcher::new(message_bus, process_manager)
+    }
+
+    // The two strings below are transcribed from real PTY captures taken by
+    // `tests/cli_tui_readiness_probe.rs` against the installed binaries, so a
+    // future CLI reword shows up here as a failing test rather than as silent
+    // zero-artifact workflows.
+
+    const CODEX_TRUST_MODAL: &str = "\
+You are running Codex in ~\\AppData\\Local\\Temp\\.tmpWUUQ1O
+Working with untrusted contents comes with higher risk of prompt injection.
+Trusting the directory allows project-local config, hooks, and exec policies to load.
+> 1. Yes, continue
+  2. No, quit
+  Press enter to continue";
+
+    const CLAUDE_TRUST_MODAL: &str = "\
+Do you trust the files in this folder?
+ 1. Yes, I trust this folder
+ 2. No, exit
+Enter to confirm - Esc to cancel";
+
+    #[test]
+    fn detects_codex_cold_start_trust_modal() {
+        assert!(is_trust_folder_prompt(CODEX_TRUST_MODAL));
+    }
+
+    #[test]
+    fn detects_claude_cold_start_trust_modal() {
+        assert!(is_trust_folder_prompt(CLAUDE_TRUST_MODAL));
+    }
+
+    #[test]
+    fn trust_modal_answer_picks_the_affirmative_option() {
+        // Both CLIs list the affirmative first and accept the numeric shortcut.
+        let (response, _) = trust_folder_accept_response();
+        assert_eq!(response, "1\r");
+    }
+
+    #[test]
+    fn does_not_mistake_prose_about_trust_for_the_modal() {
+        // Wording without a numbered affirmative must not trigger an injection.
+        assert!(!is_trust_folder_prompt(
+            "The README explains why you should trust this folder before running anything."
+        ));
+        assert!(!is_trust_folder_prompt(
+            "Trusting the directory is a decision the operator makes."
+        ));
+        // A numbered menu that is not about folder trust must not trigger either.
+        assert!(!is_trust_folder_prompt(
+            "1. Yes, overwrite the file\n2. No, keep it"
+        ));
+        assert!(!is_trust_folder_prompt(""));
     }
 
     #[tokio::test]
