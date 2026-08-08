@@ -537,6 +537,72 @@ async fn broadcast_runtime_terminal_status(
     Ok(())
 }
 
+/// Kill leftover CLI processes for a finished workflow's terminals.
+///
+/// A terminal reaching a final state does not end its PTY child: the CLI keeps
+/// its TUI open and idles. Nothing used to reap them — `TerminalLauncher::stop_all`
+/// exists but has no production caller, and it would also rewrite every terminal's
+/// status to `cancelled`, destroying the workflow's outcome. So the coding agents
+/// simply accumulated: 10+ resident `opencode`/`claude`/`codex` processes at
+/// 100-250 MB each after a batch of runs (2026-08-08 manual-workflow test report,
+/// anomaly 5).
+///
+/// This reaps processes only, and only for terminals already in a final state, so
+/// recorded statuses are untouched. Best-effort: a workflow must not fail to
+/// finalize because a kill failed.
+async fn reap_finished_workflow_processes(
+    deployment: &DeploymentImpl,
+    workflow_id: &str,
+    reason: &str,
+) {
+    const FINAL_STATUSES: &[&str] = &[
+        "completed",
+        "failed",
+        "cancelled",
+        "review_passed",
+        "review_rejected",
+    ];
+
+    let terminals = match Terminal::find_by_workflow(&deployment.db().pool, workflow_id).await {
+        Ok(terminals) => terminals,
+        Err(e) => {
+            tracing::warn!(
+                workflow_id = %workflow_id, reason, error = %e,
+                "Cannot list terminals to reap leftover CLI processes"
+            );
+            return;
+        }
+    };
+
+    let process_manager = deployment.process_manager();
+    let mut reaped = 0usize;
+    for terminal in terminals {
+        if !FINAL_STATUSES.contains(&terminal.status.as_str()) {
+            continue;
+        }
+        if !process_manager.is_running(&terminal.id).await {
+            continue;
+        }
+        match process_manager.kill_terminal(&terminal.id).await {
+            Ok(()) => {
+                reaped += 1;
+                deployment.prompt_watcher().unregister(&terminal.id).await;
+            }
+            Err(e) => tracing::warn!(
+                workflow_id = %workflow_id, terminal_id = %terminal.id, reason, error = %e,
+                "Failed to kill leftover CLI process for finished terminal"
+            ),
+        }
+    }
+
+    if reaped > 0 {
+        tracing::info!(
+            workflow_id = %workflow_id, reaped, reason,
+            "Reaped leftover CLI processes for finished workflow"
+        );
+    }
+}
+
 async fn cleanup_finished_workflow_logs_best_effort(deployment: &DeploymentImpl, reason: &str) {
     match TerminalLog::cleanup_finished_workflow_logs(&deployment.db().pool).await {
         Ok(deleted) => {
@@ -2878,6 +2944,10 @@ async fn stop_workflow(
         }
     }
 
+    // Terminals are cancelled above, but their CLI children keep their TUIs open
+    // and idle forever unless killed here.
+    reap_finished_workflow_processes(&deployment, &workflow_id, "workflow cancellation").await;
+
     cleanup_finished_workflow_logs_best_effort(&deployment, "workflow cancellation").await;
 
     // G23-004: Clean up worktree directories to free disk space
@@ -3455,6 +3525,12 @@ async fn update_task_status(
                         workflow_id = %workflow_id,
                         "Workflow auto-synced to completed after all tasks completed"
                     );
+                    reap_finished_workflow_processes(
+                        &deployment,
+                        &workflow_id,
+                        "task status auto-complete",
+                    )
+                    .await;
                     cleanup_finished_workflow_logs_best_effort(
                         &deployment,
                         "task status auto-complete",
@@ -3496,6 +3572,12 @@ async fn update_task_status(
                     {
                         tracing::warn!(workflow_id = %workflow_id, error = %e, "Failed to cascade workflow children after auto-fail");
                     }
+                    reap_finished_workflow_processes(
+                        &deployment,
+                        &workflow_id,
+                        "task status auto-complete (failed)",
+                    )
+                    .await;
                     cleanup_finished_workflow_logs_best_effort(
                         &deployment,
                         "task status auto-complete (failed)",
