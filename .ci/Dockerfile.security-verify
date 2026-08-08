@@ -14,7 +14,10 @@
 #   cargo/pnpm/git 需要 root 权限写入 /usr/local/{cargo,rustup,lib/node_modules} 等
 #   系统目录以完成依赖安装与 AI Agent 的读写操作，root 是必要且有意的。
 # ============================================================================
-# NOSONAR
+# S6471: node 基础镜像默认 root 用户是本工具链镜像的必要设计（AI Agent/编译工具链
+# 需写 /usr/local/{cargo,rustup,lib/node_modules} 等系统目录）。Sonar 的 NOSONAR
+# 仅支持所在行注释，而 Dockerfile 的 FROM 行不支持行内注释，故无法在代码内用
+# NOSONAR 抑制该行；.ci/ 两镜像已加入 sonar-project.properties 文件级排除。
 FROM node:22-bookworm-slim
 
 # 系统依赖（对齐 .github/actions/setup-rust/action.yml）
@@ -44,12 +47,14 @@ RUN curl -fsSL --retry 5 --proto '=https' --proto-redir '=https' \
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
-# NOSONAR
-# rustup-init 是 rust-lang 官方签名安装器（sh.rustup.rs 经 HTTPS 提供，
-# 脚本由官方 rust-lang/rustup 仓库发布），先下载到文件再执行以避免管道直接运行，
-# 属于可接受的官方工具链引导做法。
-RUN curl --proto '=https' --tlsv1.2 -sSf -o /tmp/rustup-init https://sh.rustup.rs \
-    && sh /tmp/rustup-init -y --profile minimal \
+# rustup-init 固定版本 1.29.0 并从官方归档下载，SHA-256 校验后再执行（消除 S8482 根因）
+ENV RUSTUP_VERSION=1.29.0
+RUN curl -fsSL --retry 5 --proto '=https' --proto-redir '=https' \
+      -o /tmp/rustup-init \
+      https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/x86_64-unknown-linux-gnu/rustup-init \
+    && echo "4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10  /tmp/rustup-init" | sha256sum -c - \
+    && chmod +x /tmp/rustup-init \
+    && /tmp/rustup-init -y --profile minimal \
     && rm /tmp/rustup-init \
     && rustup toolchain install nightly-2025-12-04 --profile default \
        --component clippy,rustfmt,rustc,rust-src,rust-std,cargo \
