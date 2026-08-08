@@ -1,6 +1,6 @@
 {
   "schema": "solodawn-security-triage-v1",
-  "updated_at": "2026-08-08T10:30:00Z",
+  "updated_at": "2026-08-08T20:10:00Z",
   "entries": {
     "audit:logging-filesystem-410": {
       "alert": "scripts/audit-security.sh 日志安全检查误报：crates/services/src/services/filesystem.rs:410 `tracing::trace!(\"Cancellation token triggered\")`",
@@ -102,6 +102,32 @@
         "round3(08-08 上午): sonar.exclusions 文件级排除 .ci Dockerfile，Docker 分析器仍对新文件产新 issue → 无效"
       ],
       "stop_reason": "attempts=3 已达止损上限。三次尝试覆盖仓库侧全部可行手段（NOSONAR 注释 / multicriteria / sonar.exclusions），且已确认失败检查为 SonarCloud Automatic Analysis（不读 sonar-project.properties，exclusion 不回溯历史 issue）。同一手段连续两轮无效已验证「旋钮没接线」——需人工在 SonarCloud 侧标记 Won't Fix/False Positive 或调整质量门禁阈值。本轮不再提任何修复 PR。"
+    },
+    "review:2026-08-08-20h-glib-2086003462864535552": {
+      "alert": "复核 CNB 中危依赖漏洞 glib@0.18.5（GHSA-wrw7-89jp-8q8g，Cargo.lock:2432）告警 id 2086003462864535552（occur_version=41d5450442，main 当前 sha 37ff677668）",
+      "verdict": "confirmed_real_requires_human",
+      "reason": "2026-08-08 20 时巡检复核：CNB code-issue API 实查（risk-level all / VUL_WARN）确认当前可访问告警仅此 1 条，仍为 open（occur_version=41d5450442，早于当前 main 37ff677668，说明扫描器基于 41d54504 快照）。Cargo.lock 实查 glib 仍 0.18.5；依赖链 crates/tray → tray-icon 0.19.3 → libappindicator 0.9.0 → gtk 0.18.2 → glib ^0.18 全部约束 ^0.18，crates.io 无 gtk 0.20+，glib 0.20.0 在当前依赖树不可解析；VariantStrIter 无直接调用（仅 Linux 桌面托盘场景传递引入）。",
+      "basis": "repo-code-issue list/detail API 与 Cargo.lock 实查双重确认；上游 advisory GHSA-wrw7-89jp-8q8g fixed=0.20.0 为主版本且不可解析；与既有 cnb:2085471182022676480 / review:2026-08-08-glib / review:2026-08-08-glib-2086003462864535552 同源同判定。",
+      "action": "维持 open 待人工/上游跟进。不创建无效修复 PR（升级不可解析），不降低安全标准，不扩大忽略范围。",
+      "date": "2026-08-08"
+    },
+    "review:2026-08-08-20h-sonar-s6471": {
+      "alert": "复核 GitHub CI：SonarCloud Code Analysis failure（Quality Gate ERROR，new_security_rating=2，New Code 内 2 条 docker:S6471）",
+      "verdict": "ci_issue_requires_human_sonar_side",
+      "attempts": 3,
+      "needs_human": true,
+      "reason": "2026-08-08 20 时巡检复核（止损轮，不新增尝试）：SonarCloud project_status API（huanchong-99_GitCortex）仍 ERROR，唯一失败条件 new_security_rating=2（S8482 已消失，证明根因修复有效）；issues API sinceLeakPeriod 确认仅剩 2 条 OPEN docker:S6471：.ci/Dockerfile.security-patrol:19 与 .ci/Dockerfile.security-verify:21。attempts=3 已达止损上限，沿用 needs_human 结论，本轮不建修复 PR。",
+      "basis": "SonarCloud project_status/issues API 实查（main 分支 new_security_rating=2，2 条 OPEN docker:S6471）；GitHub check-runs API 确认唯一 failed 为 SonarCloud Code Analysis，另 E2E Orchestration (windows-latest) 为 in_progress（非失败）；github-status 显示 cnb_main_sha==github_main_sha==37ff677668，同步正常。",
+      "action": "维持 needs_human。需人工在 SonarCloud 侧将两条 docker:S6471 标记 Won't Fix / False Positive，或调整质量门禁阈值（Automatic Analysis 不读 sonar-project.properties，仓库侧无手段）。",
+      "date": "2026-08-08"
+    },
+    "review:2026-08-08-20h-github-sync": {
+      "alert": "复核 CNB↔GitHub main 同步与 GitHub CI 状态",
+      "verdict": "in_sync",
+      "reason": "github-status.json：cnb_main_sha==github_main_sha==37ff6776687cba97da121a6827a6d0d361b529e1，同步正常，无需等待再复核。github_ci：total=16，failed=1（SonarCloud Code Analysis，见上条 needs_human），pending=1（E2E Orchestration (windows-latest)，in_progress 非失败，为常规 CI 进行中）。本地 scripts/audit-security.sh 通过，无新增本地告警。",
+      "basis": "GitHub check-runs API 实查 37ff677668：13 success / 1 failure（SonarCloud Code Analysis）/ 1 in_progress（E2E Orchestration (windows-latest)）/ 1 skipped（Frontend Check）。",
+      "action": "无需处理。SonarCloud 失败项已走止损 needs_human；E2E pending 由 GitHub 自身继续运行，下轮巡检复核。",
+      "date": "2026-08-08"
     }
   }
 }
