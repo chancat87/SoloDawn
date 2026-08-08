@@ -29,14 +29,44 @@ jobs:
       with:
         fetch-depth: 0 # Full history for better blame/analysis
 
-    # Usually SonarQube would be run here using the official action
-    # Note: Requires SONAR_TOKEN secret to be configured in GitHub repository
+    # The scan used to run unconditionally with continue-on-error, which hid a
+    # total failure: without SONAR_TOKEN the scanner exits 3 ("Not authorized or
+    # project not found") on every run, so no CI analysis has ever been uploaded
+    # — while the job still reported success. SonarCloud then falls back to
+    # Automatic Analysis, which does NOT read sonar-project.properties, so the
+    # rule suppressions in that file are silently never applied.
+    # Gate on the secret instead: skip loudly when it is missing, fail loudly
+    # when it is present and the scan really breaks.
+    - name: Check SonarCloud credentials
+      id: sonar_creds
+      env:
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      run: |
+        if [ -z "${SONAR_TOKEN}" ]; then
+          echo "configured=false" >> "$GITHUB_OUTPUT"
+          echo "::warning title=SonarCloud CI analysis skipped::SONAR_TOKEN is not configured, so sonar-project.properties (including its rule suppressions) is never applied. SonarCloud is running Automatic Analysis instead."
+          {
+            echo "### SonarCloud CI analysis skipped"
+            echo
+            echo "\`SONAR_TOKEN\` is not set in this repository's secrets, so the CI scanner cannot"
+            echo "authenticate and **\`sonar-project.properties\` is not being applied** — including"
+            echo "its \`sonar.issue.ignore.multicriteria\` suppressions. SonarCloud is falling back to"
+            echo "Automatic Analysis, which ignores that file by design."
+            echo
+            echo "To enable CI analysis: create a SonarCloud user token, add it as the \`SONAR_TOKEN\`"
+            echo "repository secret, then turn off Automatic Analysis in the SonarCloud project"
+            echo "settings (the two modes are mutually exclusive)."
+          } >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo "configured=true" >> "$GITHUB_OUTPUT"
+        fi
+
     - name: SonarScan
+      if: steps.sonar_creds.outputs.configured == 'true'
       uses: SonarSource/sonarqube-scan-action@299e4b793aaa83bf2aba7c9c14bedbb485688ec4 # v7.1.0
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-      continue-on-error: true # Allowed to fail if token not set during initial phases
 
   quality-gate:
     name: Quality Gate Analysis

@@ -62,13 +62,27 @@ SonarCloud 上跑着**两套互不相干的分析**，同名难辨但行为完�
 2026-08-07 连续 5 次修改 `sonar-project.properties` 想压掉 Automatic Analysis 报的
 docker 告警，每次都无效 —— 因为那个旋钮**根本没接到那台机器上**。
 
+2026-08-08 查到了更下面一层的原因：**CI scanner 从来没成功跑过一次**。
+本仓库 GitHub secrets 里没有 `SONAR_TOKEN`（`gh secret list` 只有三个 E2E_*），
+scanner 每次都以 `Not authorized or project not found` / exit 3 结束；而那一步当时
+写了 `continue-on-error: true`，于是 job 照样报绿。也就是说上表右列「✅ 读」的那一行
+一直是空谈，SonarCloud 上所有分析都来自 Automatic Analysis。
+现已改为：没有 token 就显式跳过并在 job summary 里写明原因；有 token 而扫描失败则
+直接失败，不再吞掉（`.github/workflows/ci-quality.yml`）。
+
 因此对 Automatic Analysis 的告警只有两条真路子：
 
 1. **修根因**（首选）。例：`docker:S8482` 已通过「rustup-init 固定版本 + 官方归档 +
    SHA-256 校验后再执行」真正修掉，`new_security_rating` 由 E 降到 B。
 2. **在 SonarCloud 界面上标记**该 issue 为 Won't Fix / Safe（需要项目管理员，Agent 做不到）。
-   或者由管理员关掉 Automatic Analysis，只保留 CI scanner，这样本仓库的
-   `sonar.issue.ignore.multicriteria` 才会真正生效。
+   或者配置 `SONAR_TOKEN` 并关掉 Automatic Analysis，只保留 CI scanner，这样本仓库的
+   `sonar.issue.ignore.multicriteria` 才会真正生效。两种分析互斥，不能都开。
+
+> 关于 `docker:S6471`（`.ci/` 两个镜像默认 root）：不采用「在 Dockerfile 末尾加
+> 非 root `USER`」来消灭告警。这两个镜像是 CNB 流水线的运行环境，stage 需要读写
+> CNB 挂载的 `/workspace`，挂载点属主由 CNB 决定；改成非 root 有让每日巡检整条挂掉
+> 的实际风险。为一条 MINOR、且针对不对外交付的 CI 镜像的告警去换这个风险不划算，
+> 故维持 root + 精确到「规则 × 文件」的抑制，等 CI scanner 真正接上后生效。
 
 `sonar.exclusions` 里**禁止**加源文件：那是文件级排除，会关掉该文件上的全部规则，
 属于本策略明令禁止的「大范围关闭扫描规则」。
