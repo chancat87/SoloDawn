@@ -7,7 +7,12 @@
 
 # 巡检调度（与 .cnb.yml 中 crontab 保持一致）
 schedule:
-  cron: "0 * * * *"          # 每小时整点执行一次
+  cron: "37 8 * * *"         # 每日一次，08:37（CNB crontab 按 Asia/Shanghai 解析）
+  rationale: |
+    巡检的独有输入是 CNB 侧告警源（依赖 CVE / SBOM / 许可证 / 代码扫描），
+    按安全公告节奏更新；提交粒度的扫描已由每次 CI 的 SonarCloud 覆盖，
+    因此每日一次即可，不减少覆盖面。放在工作日开始时执行，使 needs_human
+    结论与修复 PR 当天可被人看到，而非凌晨无人值守地自动开 PR。
   trigger: "CNB 云原生构建 crontab 事件（无需人工 / WebIDE / 常驻环境）"
 
 # 告警采集

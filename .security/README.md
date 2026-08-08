@@ -2,12 +2,12 @@
 
 本目录是仓库「自动安全巡检与修复」机制的策略与记录。
 
-> 入口配置见仓库根目录 `.cnb.yml`（`main.crontab: 0 * * * *`）。
+> 入口配置见仓库根目录 `.cnb.yml`（`main.crontab: 37 8 * * *`）。
 
 ## 一、整体流程
 
 ```
-每小时（crontab 0 * * * *，CNB 云原生构建，无需人工 / WebIDE / 常驻环境）
+每日一次（crontab 37 8 * * *，按 Asia/Shanghai 解析；CNB 云原生构建，无需人工 / WebIDE / 常驻环境）
    │
    ├─ 1. collect-alerts.sh       采集 CNB「安全」能力与当前仓库可获取的告警
    │                              → .security/alerts.json（构建期产物，不入库）
@@ -31,7 +31,7 @@
 
 | 流水线 | 触发 | 配置位置 |
 |---|---|---|
-| 每小时安全巡检 | `crontab: 0 * * * *`（CNB 云原生构建调度） | `main` 分支 |
+| 每日安全巡检 | `crontab: 37 8 * * *`（CNB 云原生构建调度，Asia/Shanghai） | `main` 分支 |
 | 安全修复 PR 验证 | `api_trigger_security_verify`（由巡检 Agent 在创建 PR 后调用 `cnb build start-build` 触发） | `auto/security-fix-*` 分支 |
 | GitHub ↔ CNB 同步 | 原有 `push` / `crontab: */5 * * * *`（保持不变） | `main` 分支 |
 

@@ -2,9 +2,9 @@
 # SoloDawn CNB 云原生构建配置
 #
 # 本文件在保留既有 GitHub ↔ CNB 同步流程（main: push / crontab */5）的基础上，
-# 新增一套每小时自动化的「CNB 云原生安全巡检与修复」流程：
+# 新增一套每日自动化的「CNB 云原生安全巡检与修复」流程：
 #
-#   1) main 分支每小时（crontab: 0 * * * *）执行安全巡检：
+#   1) main 分支每日一次（crontab: 37 8 * * *，CNB 按 Asia/Shanghai 解析）执行安全巡检：
 #      - collect-alerts.sh 采集 CNB「安全」能力与当前仓库可获取的安全告警；
 #      - npc:go AI 巡检 Agent 结合源码逐条验证告警（防止仅凭扫描器/关键词误判），
 #        误报记录到 .security/triage-log.json；真实漏洞创建独立分支+独立 PR，
@@ -179,16 +179,22 @@ main:
             sync_mode: pull
 
   # =========================================================================
-  # 【新增】每小时安全巡检与修复流程（不依赖人工 / WebIDE / 常驻环境）
+  # 【新增】每日安全巡检与修复流程（不依赖人工 / WebIDE / 常驻环境）
   #   * 采集 CNB 安全告警
   #   * 检查 CNB ↔ GitHub 同步状态与 GitHub CI 状态（对齐 github.com/.../commits/main 页面）
   #   * AI 巡检 + 修复 + 自动验证 + 自动合并 + 分支清理（全自动循环）
   # =========================================================================
-  "crontab: 0 * * * *":
-    - name: Security Patrol (hourly)
+  # 频率取每日一次而非每小时：本巡检唯一的独有输入是 CNB 侧告警源
+  # （依赖 CVE / SBOM / 许可证 / 代码扫描），按安全公告节奏更新，不会分钟级变化；
+  # 提交粒度的安全扫描已由每次 CI 的 SonarCloud 覆盖，降频不减少覆盖面。
+  # 时间取 08:37（CNB crontab 按 Asia/Shanghai 解析）：结果在工作日开始时就绪，
+  # needs_human 结论或修复 PR 当天即可被看到，而不是凌晨无人值守地自动开 PR。
+  # 分钟取 37 而非整点，避开 */5 同步任务与共享 runner 的整点峰值。
+  "crontab: 37 8 * * *":
+    - name: Security Patrol (daily)
       # 防止巡检相互重叠：同一时间只保留最新一次巡检
       lock:
-        key: security-patrol-hourly
+        key: security-patrol-daily
         wait: true
         cancel-in-wait: true
       runner:
