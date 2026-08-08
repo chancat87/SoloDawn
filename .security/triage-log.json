@@ -1,6 +1,6 @@
 {
   "schema": "solodawn-security-triage-v1",
-  "updated_at": "2026-08-08T20:10:00Z",
+  "updated_at": "2026-08-09T00:10:00Z",
   "entries": {
     "audit:logging-filesystem-410": {
       "alert": "scripts/audit-security.sh 日志安全检查误报：crates/services/src/services/filesystem.rs:410 `tracing::trace!(\"Cancellation token triggered\")`",
@@ -120,6 +120,22 @@
       "basis": "SonarCloud project_status/issues API 实查（main 分支 new_security_rating=2，2 条 OPEN docker:S6471）；GitHub check-runs API 确认唯一 failed 为 SonarCloud Code Analysis，另 E2E Orchestration (windows-latest) 为 in_progress（非失败）；github-status 显示 cnb_main_sha==github_main_sha==37ff677668，同步正常。",
       "action": "维持 needs_human。需人工在 SonarCloud 侧将两条 docker:S6471 标记 Won't Fix / False Positive，或调整质量门禁阈值（Automatic Analysis 不读 sonar-project.properties，仓库侧无手段）。",
       "date": "2026-08-08"
+    },
+    "review:2026-08-08-23h-round": {
+      "alert": "2026-08-08 23 时安全巡检整体复核：CNB 告警快照 / 本地审计 / GitHub CI / 同步状态",
+      "verdict": "no_new_action",
+      "reason": "2026-08-08 23 时巡检复核：CNB repo-code-issue API 实查（risk-level all，page-size 100）当前可访问告警仍仅 1 条 open（glib@0.18.5，id 2086003462864535552，occur_version=41d54504，早于当前 main b4a5f24ee，扫描器基于旧快照）；Cargo.lock 实查 glib 仍 0.18.5（gtk 0.18.2 / tray-icon 0.19.3 / libappindicator 0.9.0，依赖链全部约束 ^0.18），glib 0.20.0 在当前依赖树不可解析，沿用既有 confirmed_real_requires_human 判定。fast-uri 锁文件已 3.1.2（无残留 3.1.1），CVE-2026-6322 已修复。本地 scripts/audit-security.sh 通过。SonarCloud project_status（huanchong-99_GitCortex@main）仍 ERROR（new_security_rating=2），唯一失败 GitHub check-run 为 SonarCloud Code Analysis，attempts=3 已止损 needs_human，本轮不重复尝试。",
+      "basis": "repo-code-issue list/detail API 实查（total=1，仅 glib）；Cargo.lock 实查 glib=0.18.5 / gtk=0.18.2 / tray-icon=0.19.3 / libappindicator=0.9.0；pnpm-lock.yaml 实查 fast-uri=3.1.2（lockfileVersion 3.1.2，无 3.1.1 残留）；scripts/audit-security.sh 通过；GitHub check-runs API 实查 b4a5f24ee：15 runs = 12 success / 1 failure(SonarCloud Code Analysis) / 1 in_progress(E2E Orchestration windows-latest) / 1 skipped(Frontend Check)；SonarCloud project_status API new_security_rating=2 ERROR；github-status.json cnb_main_sha==github_main_sha==b4a5f24ee，同步正常。",
+      "action": "无新告警需处置。glib 维持 open 待人工/上游跟进（不创建无效修复 PR）；SonarCloud 沿用 needs_human（attempts=3 已达止损上限，需人工在 SonarCloud 侧标记 Won't Fix/False Positive 或调整质量门禁阈值）；E2E Orchestration windows-latest 为常规 CI 进行中，下轮复核。triage-log updated_at 同步为本轮时间。",
+      "date": "2026-08-08"
+    },
+    "review:2026-08-09-00h-round": {
+      "alert": "2026-08-09 00 时安全巡检整体复核：CNB 告警快照 / 本地审计 / GitHub CI / 同步状态",
+      "verdict": "no_new_action",
+      "reason": "2026-08-09 00 时巡检复核：CNB repo-code-issue list/detail API 实查（risk-level all，page-size 100）当前可访问告警仍仅 1 条 open（glib@0.18.5，id 2086003462864535552，occur_version=41d54504，早于当前 main b4a5f24ee，扫描器基于旧快照）；Cargo.lock 实查 glib 仍 0.18.5（gtk 0.18.2 / tray-icon 0.19.3 / libappindicator 0.9.0，依赖链全部约束 glib ^0.18）。本轮额外核实 crates.io 索引：gtk 最新仍为 0.18.2（约束 glib ^0.18）、tray-icon 0.24.2 仍依赖 gtk ^0.18 与 libappindicator ^0.9、libappindicator 0.9.0 约束 glib ^0.18，故 glib 0.20.0 在当前依赖树仍不可解析，沿用 confirmed_real_requires_human 判定，不创建无效修复 PR。fast-uri 锁文件已 3.1.2（package.json overrides 生效，无 3.1.1 残留），CVE-2026-6322 已修复。本地 scripts/audit-security.sh 通过。GitHub check-runs API 实查 b4a5f24ee：15 runs = 13 success / 1 failure（SonarCloud Code Analysis）/ 1 skipped（Frontend Check），E2E Orchestration (windows-latest) 已完成且 success。SonarCloud 失败项 attempts=3 已达止损上限 needs_human，本轮不重复尝试。",
+      "basis": "repo-code-issue list/detail API 实查（total=1，仅 glib）；Cargo.lock 实查 glib=0.18.5 / gtk=0.18.2 / tray-icon=0.19.3 / libappindicator=0.9.0；crates.io sparse index 实查 gtk max=0.18.2（glib_req=^0.18）、tray-icon 0.24.2（gtk ^0.18 / libappindicator ^0.9）、libappindicator 0.9.0（glib_req=^0.18）、glib max=0.22.8；pnpm-lock.yaml 实查 fast-uri=3.1.2（无 3.1.1 残留）；scripts/audit-security.sh 通过；GitHub check-runs API 实查 b4a5f24ee：15 runs = 13 success / 1 failure(SonarCloud Code Analysis) / 1 skipped(Frontend Check)；github-status.json cnb_main_sha==github_main_sha==b4a5f24ee，同步正常。",
+      "action": "无新告警需处置。glib 维持 open 待人工/上游跟进（不创建无效修复 PR，升级不可解析）；SonarCloud 沿用 needs_human（attempts=3 已达止损上限，需人工在 SonarCloud 侧标记 Won't Fix/False Positive 或调整质量门禁阈值）；triage-log updated_at 同步为本轮时间。",
+      "date": "2026-08-09"
     },
     "review:2026-08-08-20h-github-sync": {
       "alert": "复核 CNB↔GitHub main 同步与 GitHub CI 状态",
