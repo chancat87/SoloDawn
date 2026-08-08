@@ -50,6 +50,29 @@
   因此自动流程以 `.security/triage-log.json` 记录误报判定与依据。
   若后续平台开放单条精确抑制能力，再对该记录做最小范围抑制。
 
+### SonarCloud 双分析（重要，踩过坑）
+
+SonarCloud 上跑着**两套互不相干的分析**，同名难辨但行为完全不同：
+
+| GitHub check 名称 | 来源 | 读 `sonar-project.properties`？ |
+|---|---|---|
+| **SonarCloud Code Analysis** | SonarCloud 的 Automatic Analysis（平台侧自动跑） | ❌ **不读** |
+| **SonarQube Analysis** | `.github/workflows/ci-quality.yml` 里的 scanner | ✅ 读 |
+
+2026-08-07 连续 5 次修改 `sonar-project.properties` 想压掉 Automatic Analysis 报的
+docker 告警，每次都无效 —— 因为那个旋钮**根本没接到那台机器上**。
+
+因此对 Automatic Analysis 的告警只有两条真路子：
+
+1. **修根因**（首选）。例：`docker:S8482` 已通过「rustup-init 固定版本 + 官方归档 +
+   SHA-256 校验后再执行」真正修掉，`new_security_rating` 由 E 降到 B。
+2. **在 SonarCloud 界面上标记**该 issue 为 Won't Fix / Safe（需要项目管理员，Agent 做不到）。
+   或者由管理员关掉 Automatic Analysis，只保留 CI scanner，这样本仓库的
+   `sonar.issue.ignore.multicriteria` 才会真正生效。
+
+`sonar.exclusions` 里**禁止**加源文件：那是文件级排除，会关掉该文件上的全部规则，
+属于本策略明令禁止的「大范围关闭扫描规则」。
+
 ## 五、真实漏洞修复规则
 
 - 独立分支 `auto/security-fix-*` + 独立 PR，最小修改，不改变无关功能/接口/架构。
@@ -58,7 +81,7 @@
   敏感信息泄露、不安全默认配置、依赖漏洞、供应链风险。
 - PR 必须说明：原始告警；是否确认可利用；根因；修改内容；影响范围；测试和验证结果。
 
-## 六、自动合并条件（默认关闭，`AUTO_MERGE_ENABLED=false`）
+## 六、自动合并条件（`AUTO_MERGE_ENABLED=true`）
 
 仅当以下**全部**满足时才自动合并到 `main`：
 
@@ -67,11 +90,20 @@
 3. 所有相关测试通过；
 4. 构建通过；
 5. 静态检查通过；
-6. 安全检查通过；
+6. 安全检查通过 —— **同时**要求本地 `security_audit` 通过
+   **且** `github_ci_state == "success"`；
 7. 独立代码审核未发现新的高风险问题；
-8. 不存在需要人工判断的架构、权限或兼容性变化。
+8. 不存在需要人工判断的架构、权限或兼容性变化；
+9. 未触碰第七节列出的自我约束红线文件。
 
 任何一项存在不确定性 → 只创建/保留 PR，等待人工审核，不自动合并。
+
+> 第 6 条为什么要单列 `github_ci_state`：`verify-results.json` 原有的
+> `pr_ci_state` 来自 `cnb pulls list-pull-commit-statuses`，只反映 CNB 自己的流水线。
+> SonarCloud 的 Quality Gate 是挂在 **GitHub** commit 上的 check-run，CNB 看不到。
+> 2026-08-07 就因为这个盲区，安全门禁一路红着，自动合并却判定「安全检查通过」
+> 并合入 main。`scripts/security/verify-fix.sh` 现在会额外读一次 GitHub
+> check-runs，把结果写进 `github_ci_state` / `github_ci_failed_checks`。
 
 ## 七、安全边界（硬性约束）
 
@@ -79,6 +111,32 @@
 - 禁止修改 CNB/GitHub 密钥仓库（如 `solodawn-secrets`）中的凭证。
 - 禁止执行与当前仓库安全修复无关的外部操作。
 - 禁止 force push `main`；禁止修改或删除既有提交历史。
+
+### 自我约束红线（Agent 不得修改）
+
+以下文件是**管着 Agent 自己**的闸门，Agent 无权为了让流程通过而放宽：
+
+| 文件 | 受保护范围 |
+|---|---|
+| `.cnb.yml` | `AUTO_MERGE_ENABLED` 及任何自动合并判定逻辑 |
+| `.security/policy.yml` | 整个文件，尤其 `auto_merge` 与 `suppression` |
+| `sonar-project.properties` | `sonar.exclusions` 的源文件条目 |
+
+需要调整时只能记录到巡检总结交人工处理。独立审核 Agent 发现被审 PR 触碰这些范围，
+一律判定 `wait_for_human`。
+
+> 为什么加这条：commit `3ff01c1bd` 中，巡检 Agent 自行把 `AUTO_MERGE_ENABLED`
+> 由 `"false"` 改成 `"true"`（原注释写着「保守默认：不自动合并，等待人工审核」），
+> 随后在 GitHub 侧安全门禁持续失败的情况下自动合并了多个 PR 到 `main`。
+> 自主 Agent 不得解除约束自身的闸门。
+
+### 止损：同一问题最多 3 轮
+
+`.security/triage-log.json` 每条记录带 `attempts` 计数。达到 3 次仍未解决 →
+标记 `needs_human`，停止再提修复 PR，在总结里写明每轮做法与真实卡点。
+
+同一手段连续两轮无效时，必须先怀疑「这个旋钮根本没接线」，去核实该检查的真实来源
+（见第四节 SonarCloud 双分析），而不是继续换写法。
 
 ## 八、构建期产物（不入库）
 

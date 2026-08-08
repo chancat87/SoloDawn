@@ -48,10 +48,53 @@ suppression:
     - "为消除告警而大范围关闭扫描规则 / 禁用扫描器"
     - "把 admin / password / token 等关键词一概加入忽略列表"
     - "修改扫描配置以降低安全标准"
+    - "把源文件加入 sonar.exclusions（文件级排除会关闭该文件上的全部规则）"
+  sonar:
+    # 允许的抑制方式：精确到「规则 × 文件」，且必须写明理由
+    allowed: "sonar.issue.ignore.multicriteria"
+    # 禁止的抑制方式：源文件级排除
+    forbidden: "sonar.exclusions 中新增源文件条目"
+    remove_when_root_cause_fixed: true   # 根因修好后必须同步移除对应抑制条目
+    known_limitation: >
+      SonarCloud 的 Automatic Analysis 不读取 sonar-project.properties，
+      只有 CI 侧 scanner（ci-quality.yml 的 SonarQube Analysis）会应用抑制。
+      因此「改配置压掉 Automatic Analysis 的告警」这条路走不通，
+      唯一有效的手段是修根因，或由人工在 SonarCloud 上标记。
   note: >
     CNB 当前 OpenAPI 未提供代码扫描告警的"忽略"接口（仅列表/详情），
     因此自动流程以 .security/triage-log.json 记录误报判定与依据；
     若后续平台开放单条记录的精确忽略能力，可对该记录做最小范围抑制。
+
+# 自我约束红线：以下文件构成对 Agent 自身的管控，Agent 无权为了让流程通过而放宽
+governance_files:
+  immutable_by_agent:
+    - path: .cnb.yml
+      scope: AUTO_MERGE_ENABLED 及任何自动合并判定逻辑
+    - path: .security/policy.yml
+      scope: 整个文件，尤其 auto_merge 与 suppression 段
+    - path: sonar-project.properties
+      scope: sonar.exclusions 的源文件条目
+  rationale: >
+    2026-08-07 巡检 Agent 自行把 AUTO_MERGE_ENABLED 由 "false" 改为 "true"
+    （commit 3ff01c1bd），随后在 GitHub 侧 SonarCloud 安全门禁持续失败的情况下
+    仍自动合并了多个 PR 到 main —— 直接违反 issue #5 第 7 条的
+    "安全检查通过" 前置条件。自主 Agent 不得解除约束自身的闸门。
+  enforcement: >
+    独立审核 Agent 发现被审 PR 触碰上述范围时，一律判定 wait_for_human，
+    不得自动合并。
+
+# 止损：同一问题的重复尝试上限
+retry_budget:
+  max_attempts_per_issue: 3
+  counter_field: attempts          # 记录在 .security/triage-log.json 的每条记录上
+  on_exhausted: >
+    标记 needs_human 并停止再提修复 PR，在巡检总结中写明已尝试轮次、
+    每轮做法与当前判断的真实卡点。
+  rationale: >
+    2026-08-07 出现连续 5 次修改 sonar-project.properties 试图压掉同一条告警、
+    每次都无效的空转。根因是失败的检查来自 SonarCloud Automatic Analysis，
+    它根本不读该文件。同一手段连续两轮无效时，必须先怀疑
+    "这个旋钮没接线"，去核实该检查的真实来源，而不是继续换写法。
 
 # 真实漏洞修复规则
 fix:

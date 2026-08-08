@@ -123,7 +123,7 @@ else
   skip_check security_audit "security audit" "scripts/audit-security.sh missing"
 fi
 
-# 5) PR CI 状态（构建/测试/静态检查的权威门禁；GitHub 侧不可用时保持 not_checked）
+# 5) CNB 侧 PR CI 状态（CNB 自己跑的流水线；不可用时保持 not_checked）
 pr_ci_state="not_checked"
 if [[ -n "${PR_NUMBER:-}" && -n "${CNB_REPO_SLUG:-}" ]] && command -v cnb >/dev/null 2>&1; then
   ci_json="$(cnb pulls list-pull-commit-statuses --repo "${CNB_REPO_SLUG}" --number "${PR_NUMBER}" --verbose 2>/dev/null || true)"
@@ -134,11 +134,45 @@ if [[ -n "${PR_NUMBER:-}" && -n "${CNB_REPO_SLUG:-}" ]] && command -v cnb >/dev/
   fi
 fi
 
+# 6) GitHub 侧 check-runs 状态
+#
+# 为什么必须单独查：pr_ci_state 来自 `cnb pulls list-pull-commit-statuses`，
+# 只反映 CNB 自己的流水线。SonarCloud 的 Quality Gate 是挂在 GitHub commit 上的
+# check-run，CNB 完全看不到 —— 2026-08-07 就是因为这个盲区，安全门禁一路红着，
+# 而自动合并仍判定 security_checks_passed=true 并合入 main，直接违反
+# issue #5 第 7 条。这里补上这只眼睛。
+#
+# 只读 GitHub 公开 API，不需要任何凭证。
+github_ci_state="not_checked"
+github_ci_failed_checks="[]"
+gh_sha="${CNB_COMMIT_SHA:-${CNB_BRANCH_SHA:-}}"
+if [[ -n "$gh_sha" ]] && command -v curl >/dev/null 2>&1; then
+  gh_json="$(curl -fsSL --max-time 30 \
+    "https://api.github.com/repos/huanchong-99/SoloDawn/commits/${gh_sha}/check-runs" \
+    2>/dev/null || true)"
+  if echo "$gh_json" | jq -e '.check_runs?' >/dev/null 2>&1; then
+    gh_failed="$(echo "$gh_json" | jq -c '[.check_runs[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled") | .name]')"
+    gh_pending="$(echo "$gh_json" | jq '[.check_runs[] | select(.status != "completed")] | length')"
+    github_ci_failed_checks="$gh_failed"
+    if [[ "$(echo "$gh_failed" | jq 'length')" -gt 0 ]]; then
+      github_ci_state="failure"
+    elif [[ "$gh_pending" -gt 0 ]]; then
+      github_ci_state="pending"
+    else
+      github_ci_state="success"
+    fi
+  fi
+fi
+echo "GitHub check-runs (${gh_sha:-no-sha}): ${github_ci_state} failed=${github_ci_failed_checks}"
+
 # 汇总
 end_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-report="$(echo "$report" | jq --arg s "$pr_ci_state" --arg n "${PR_NUMBER:-}" --arg e "$end_ts" \
+report="$(echo "$report" | jq \
+  --arg s "$pr_ci_state" --arg n "${PR_NUMBER:-}" --arg e "$end_ts" \
+  --arg g "$github_ci_state" --argjson gf "$github_ci_failed_checks" --arg gs "${gh_sha:-}" \
   '{started_at: .started_at, finished_at: $e, repo: .repo, branch: .branch,
     pr_number: $n, pr_ci_state: $s,
+    github_commit_sha: $gs, github_ci_state: $g, github_ci_failed_checks: $gf,
     passed: ([.checks[] | select(.status == "passed")] | length),
     failed: ([.checks[] | select(.status == "failed")] | length),
     skipped: ([.checks[] | select(.status == "skipped")] | length),
@@ -147,5 +181,5 @@ report="$(echo "$report" | jq --arg s "$pr_ci_state" --arg n "${PR_NUMBER:-}" --
 echo "$report" | jq . > "$RESULTS"
 echo ""
 echo "=== 验证汇总 ==="
-jq '{passed, failed, skipped, pr_ci_state}' "$RESULTS"
+jq '{passed, failed, skipped, pr_ci_state, github_ci_state, github_ci_failed_checks}' "$RESULTS"
 echo "输出：$RESULTS"

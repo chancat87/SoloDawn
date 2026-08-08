@@ -58,6 +58,12 @@
           - 禁止执行与当前仓库安全修复无关的外部操作；
           - 禁止 force push main、禁止修改或删除既有提交历史。
           你只对当前安全修复 PR 做最小范围复核，不做任何无关修改。
+
+          【自我约束红线】以下文件构成对你自身的管控，你无权为了让流程通过而放宽它们。
+          若被审 PR 改动了这些文件中的门禁项，一律判定 decision="wait_for_human"：
+          - .cnb.yml 的 AUTO_MERGE_ENABLED 及任何自动合并判定逻辑；
+          - .security/policy.yml（尤其 auto_merge 与 suppression 段）；
+          - sonar-project.properties 中新增的 sonar.exclusions 源文件条目。
         userPrompt: |
           请对当前安全修复变更执行一次"独立"代码审核（区别于创建该 PR 的巡检 Agent）。
 
@@ -84,7 +90,11 @@
              - gate=advisory 的检查（如 cargo_fmt，main 基线本身未全绿且 GitHub CI 不跑 fmt）
                仅供参考记录，不作为自动合并阻断条件；
              - 若存在 skipped 的硬性检查，视为"存在不确定性"，不得自动合并；
-             - pr_ci_state 必须为 success；否则不得自动合并。
+             - pr_ci_state 必须为 success；否则不得自动合并；
+             - **github_ci_state 必须为 success**；为 failure 或 pending 时一律不得自动合并。
+               这一条对应 issue #5 第 7 条的「安全检查通过」：SonarCloud 的 Quality Gate
+               是 GitHub 侧的 check-run，pr_ci_state（只看 CNB 流水线）看不到它。
+               github_ci_failed_checks 里列出的失败项必须在结论里逐条写明。
           4. 将审核结论写入 .security/auto-merge-decision.json，格式：
              {
                "pr": <PR编号>, "branch": <当前分支>,
@@ -98,14 +108,20 @@
                "no_manual_judgement_needed": true/false,
                "all_conditions_met": true/false,
                "auto_merge_enabled": <环境变量 AUTO_MERGE_ENABLED 是否为 true>,
+               "github_ci_state": <verify-results.json 中的 github_ci_state 原值>,
+               "touches_governance_files": true/false,
                "decision": "auto_merge" | "wait_for_human" | "reject",
                "reason": "<判断依据>"
              }
+             注意：security_checks_passed 必须同时反映本地 security_audit 与
+             github_ci_state；只要 GitHub 侧安全门禁是红的，它就必须为 false。
           5. 合并判定（仅当以下全部满足才调用 cnb pulls merge-pull 执行自动合并）：
              - AUTO_MERGE_ENABLED 环境变量为 "true"；
              - vulnerability_confirmed=true 且 fix_scope_clear_low_risk=true；
              - verify-results.json 中全部硬性检查 passed 且无 skipped；
              - verify-results.json 中 pr_ci_state == "success"；
+             - verify-results.json 中 github_ci_state == "success"；
+             - touches_governance_files=false（未改动上述自我约束红线中的文件）；
              - 你本次独立审核未发现新的高风险问题；
              - 无需要人工判断的架构/权限/兼容性变化。
              任何一项不满足或存在不确定性 → 只保留 PR 等待人工审核，绝不自动合并。
@@ -230,6 +246,16 @@ main:
               - 禁止把 admin / password / token / localhost / test 等关键词一概判定为漏洞
                 或一概加入忽略列表。
 
+              【自我约束红线】以下文件是对你自身的管控，你无权为了让流程通过而放宽它们，
+              一律禁止修改（需要调整时只能记录到巡检总结，交人工处理）：
+              - .cnb.yml 中的 AUTO_MERGE_ENABLED 与任何自动合并判定逻辑；
+              - .security/policy.yml，尤其 auto_merge 与 suppression 两段；
+              - sonar-project.properties 的 sonar.exclusions —— 只能排除构建产物与依赖目录，
+                禁止把源文件加进去。文件级排除会关闭该文件上的全部规则，属于
+                policy.yml → suppression.forbidden 明令禁止的「大范围关闭扫描规则」。
+                确需抑制单条规则时，用 sonar.issue.ignore.multicriteria 精确到
+                「规则 × 文件」，并在注释里写明理由与根因是否已修复。
+
               你有 Shell 与 git 权限，可调用 cnb 命令（issues / pulls / build / repo-code-issue 等），
               可加载本镜像内置的 cnb-api、cnb-code-commit、cnb-pipeline、cnb-code-review、
               cnb-pr-diff 等 skill 并按其规范执行。
@@ -277,6 +303,20 @@ main:
                   若属于仓库代码/配置可修复项（如 SonarCloud 质量门禁、静态检查失败），
                   按最小修改原则创建修复 PR（走 B 流程），确保 GitHub 侧也全绿。
                 * 若 github_ci 为空或不可达：记录为"无法读取 GitHub CI，待下轮复核"，不阻塞告警处置。
+
+              【止损：同一问题最多尝试 3 轮】
+              修 GitHub CI 之前，先读 .security/triage-log.json 里该问题的 attempts 计数：
+                - attempts >= 3：**停止再尝试**，不要再提任何修复 PR。把问题标记为
+                  needs_human，在巡检总结里写明「已尝试 N 轮仍未解决 + 每轮做了什么 +
+                  当前判断的真实卡点」，交人工处理；
+                - 否则：本轮尝试后把 attempts 加一，并记录本轮的具体做法，
+                  **下一轮禁止重复同一做法**。
+              这条是硬性要求。2026-08-07 曾出现连续 5 次改 sonar-project.properties
+              想压掉同一条告警、每次都无效的空转 —— 根因是失败的 SonarCloud Code Analysis
+              属于 SonarCloud 的 Automatic Analysis，**根本不读 sonar-project.properties**
+              （读它的是 ci-quality.yml 里另一个 SonarQube Analysis 任务，那个一直是绿的）。
+              若同一手段连续两轮无效，必须先怀疑「这个旋钮根本没接线」，
+              去查该检查的真实来源，而不是继续换写法。
 
               【输出】最后用中文给出简洁总结：
               - 本次巡检发现的告警总数、逐条判定结果（误报/真实/待定）；
