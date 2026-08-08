@@ -9412,6 +9412,13 @@ impl OrchestratorAgent {
         task: &db::models::WorkflowTask,
         terminal: &db::models::Terminal,
     ) -> &'static str {
+        // A DIY stage never commits on its own, so its output would otherwise
+        // stay loose in the shared tree — invisible to the completion check and
+        // then miscounted as the *next* stage's work. Capture it first.
+        if self.capture_diy_stage_commit(task, terminal).await.is_some() {
+            return force_finish_status(true, None);
+        }
+
         let has_commit = terminal
             .last_commit_hash
             .as_deref()
@@ -9439,6 +9446,83 @@ impl OrchestratorAgent {
             }
         };
         force_finish_status(false, worktree_changes)
+    }
+
+    /// Capture a finishing DIY stage's working-tree changes as one commit.
+    ///
+    /// DIY workflows deliberately run every stage in the *same* directory —
+    /// that is the mode's contract, since the stages hand off to each other
+    /// (frontend → backend → audit-fix) and separate worktrees would hide each
+    /// stage's output from the next. Nothing in that path ever commits, though,
+    /// which leaves two defects:
+    ///
+    /// 1. `last_commit_hash` stays null forever, so `git_watcher` never
+    ///    publishes `TerminalCompleted` and the stall detector is the *only*
+    ///    way a DIY terminal reaches a final state.
+    /// 2. [`stall_force_finish_status`](Self::stall_force_finish_status) judges
+    ///    delivered work by counting working-tree changes. In a shared tree
+    ///    those counts accumulate, so stage N is credited with stage N-1's
+    ///    diff and reports success even when it produced nothing.
+    ///
+    /// Committing each stage as it finishes fixes both, and gives the user one
+    /// reviewable, revertable commit per stage instead of an undifferentiated
+    /// pile of edits. Returns the new HEAD when a commit was made.
+    ///
+    /// Agent-planned workflows are skipped: they already get per-task worktrees
+    /// plus the acceptance-review safety net
+    /// ([`auto_commit_pending_changes_for_review`]), and their tasks can run in
+    /// parallel over one tree, where a blanket `git add -A` would attribute a
+    /// sibling task's work to whichever terminal happened to finish first.
+    async fn capture_diy_stage_commit(
+        &self,
+        task: &db::models::WorkflowTask,
+        terminal: &db::models::Terminal,
+    ) -> Option<String> {
+        match self.is_agent_planned_workflow().await {
+            Ok(false) => {}
+            Ok(true) => return None,
+            Err(e) => {
+                tracing::warn!(
+                    task_id = %task.id, error = %e,
+                    "Cannot read execution mode; skipping the DIY stage commit"
+                );
+                return None;
+            }
+        }
+
+        let working_dir = self.resolve_task_quality_root(task).await.ok()?;
+        let role = terminal.role.as_deref().unwrap_or("agent");
+        let message = format!(
+            "chore(workflow): 保存「{}」阶段产出\n\n\
+Stage output captured by SoloDawn when the terminal finished. DIY stages share\n\
+one working tree and hand off to each other, so each stage is committed on\n\
+completion: the next stage starts from a clean tree and this stage's work stays\n\
+separately reviewable.\n\n\
+---METADATA---\n\
+task_id: {}\n\
+terminal_id: {}\n\
+role: {role}\n",
+            task.name, task.id, terminal.id
+        );
+
+        let hash =
+            auto_commit_working_tree(&working_dir, &message, "DIY stage capture", &task.id).await?;
+
+        if let Err(e) = db::models::Terminal::update_last_commit(
+            &self.db.pool,
+            &terminal.id,
+            &hash,
+            &format!("chore(workflow): 保存「{}」阶段产出", task.name),
+        )
+        .await
+        {
+            // The commit exists either way; only the DB pointer is missing.
+            tracing::warn!(
+                task_id = %task.id, terminal_id = %terminal.id, error = %e,
+                "DIY stage commit created but recording it on the terminal failed"
+            );
+        }
+        Some(hash)
     }
 
     async fn resolve_task_quality_root(
@@ -11907,92 +11991,90 @@ async fn auto_commit_pending_changes_for_review(
     working_dir: &Path,
     task_id: &str,
 ) -> Option<String> {
+    // The `task_id:` footer is what collect_task_changed_file_list greps for
+    // (`git log --grep=task_id: <id>`) to attribute these files to this task.
+    let message = format!(
+        "chore: auto-commit pending working-tree changes for acceptance review
+
+Captures uncommitted coder modifications before the review so it sees the latest
+implementation (prevents empty-handoff 0-score re-drive loops).
+
+---METADATA---
+task_id: {task_id}
+"
+    );
+    auto_commit_working_tree(working_dir, &message, "acceptance-review safety net", task_id).await
+}
+
+/// Stage every working-tree change under `working_dir` into one commit.
+///
+/// `--no-verify` skips pre-commit hooks so the capture never fails on lint: the
+/// alternative is losing the agent's work, and the quality gate (not a hook) is
+/// what judges it. Returns `Some(new_head)` when a commit was created, else
+/// `None` (clean tree / non-fatal git error). `reason` and `task_id` only
+/// appear in logs.
+async fn auto_commit_working_tree(
+    working_dir: &Path,
+    message: &str,
+    reason: &str,
+    task_id: &str,
+) -> Option<String> {
+    // Ports leak into hooks and confuse dev servers the agent may have started.
+    let git = |args: &[&str]| {
+        let mut cmd = tokio::process::Command::new("git");
+        cmd.args(args)
+            .current_dir(working_dir)
+            .env_remove("PORT")
+            .env_remove("BACKEND_PORT")
+            .env_remove("FRONTEND_PORT");
+        cmd
+    };
+
     // 1. Stage all working-tree changes (.gitignore still applies).
-    let add_status = tokio::process::Command::new("git")
-        .args(["add", "-A"])
-        .current_dir(working_dir)
-        .env_remove("PORT")
-        .env_remove("BACKEND_PORT")
-        .env_remove("FRONTEND_PORT")
-        .status()
-        .await
-        .ok()?;
-    if !add_status.success() {
+    if !git(&["add", "-A"]).status().await.ok()?.success() {
         tracing::warn!(
-            task_id = %task_id,
-            "auto-commit safety net: `git add -A` failed; leaving working tree as-is"
+            task_id = %task_id, reason = %reason,
+            "auto-commit: `git add -A` failed; leaving working tree as-is"
         );
         return None;
     }
 
     // 2. Bail out when nothing is staged (`git diff --cached --quiet` exits 0
     //    on a clean index, 1 when staged changes exist).
-    let cached = tokio::process::Command::new("git")
-        .args(["diff", "--cached", "--quiet"])
-        .current_dir(working_dir)
-        .env_remove("PORT")
-        .env_remove("BACKEND_PORT")
-        .env_remove("FRONTEND_PORT")
+    if git(&["diff", "--cached", "--quiet"])
         .status()
         .await
-        .ok()?;
-    if cached.success() {
+        .ok()?
+        .success()
+    {
         return None;
     }
 
-    // 3. Commit with the `task_id:` footer so collect_task_changed_file_list
-    //    (`git log --grep=task_id: <id>`) attributes these files to this task.
-    let message = format!(
-        "chore: auto-commit pending working-tree changes for acceptance review\n\n\
-Captures uncommitted coder modifications before the review so it sees the latest\n\
-implementation (prevents empty-handoff 0-score re-drive loops).\n\n\
----METADATA---\n\
-task_id: {task_id}\n"
-    );
-    let commit_status = tokio::process::Command::new("git")
-        .args(["commit", "--no-verify", "-m", &message])
-        .current_dir(working_dir)
-        .env_remove("PORT")
-        .env_remove("BACKEND_PORT")
-        .env_remove("FRONTEND_PORT")
+    // 3. Commit.
+    if !git(&["commit", "--no-verify", "-m", message])
         .status()
         .await
-        .ok()?;
-    if !commit_status.success() {
+        .ok()?
+        .success()
+    {
         tracing::warn!(
-            task_id = %task_id,
-            "auto-commit safety net: `git commit` failed; unstaging to keep the index clean"
+            task_id = %task_id, reason = %reason,
+            "auto-commit: `git commit` failed; unstaging to keep the index clean"
         );
-        let _ = tokio::process::Command::new("git")
-            .args(["reset"])
-            .current_dir(working_dir)
-            .env_remove("PORT")
-            .env_remove("BACKEND_PORT")
-            .env_remove("FRONTEND_PORT")
-            .status()
-            .await;
+        let _ = git(&["reset"]).status().await;
         return None;
     }
 
-    // 4. Return the new HEAD hash so the caller reviews the captured state.
-    let head_output = tokio::process::Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(working_dir)
-        .env_remove("PORT")
-        .env_remove("BACKEND_PORT")
-        .env_remove("FRONTEND_PORT")
-        .output()
-        .await
-        .ok()?;
+    // 4. Return the new HEAD hash so the caller can record what it captured.
+    let head_output = git(&["rev-parse", "HEAD"]).output().await.ok()?;
     if head_output.status.success() {
         let hash = String::from_utf8_lossy(&head_output.stdout)
             .trim()
             .to_string();
         if !hash.is_empty() {
             tracing::info!(
-                task_id = %task_id,
-                new_head = %hash,
-                "auto-commit safety net: captured uncommitted working-tree changes before review"
+                task_id = %task_id, reason = %reason, new_head = %hash,
+                "auto-commit: captured uncommitted working-tree changes"
             );
             return Some(hash);
         }
@@ -12651,8 +12733,8 @@ mod tests {
     use super::{
         BlockerKey, BlockerMultiset, Duration, JsPackageManager, LOOP_PAUSE_PLATEAU_ROUNDS,
         LOOP_PAUSE_REGRESSION_ROUNDS, LoopProgressClass, OrchestratorAgent,
-        StallRecoveryTracker, classify_loop_progress, compute_blocker_multiset,
-        ensure_js_deps_installed_for_gate, force_finish_status,
+        StallRecoveryTracker, auto_commit_working_tree, classify_loop_progress,
+        compute_blocker_multiset, ensure_js_deps_installed_for_gate, force_finish_status,
         is_quality_run_only_infra_blockers, reset_js_bootstrap_cache_for_test,
         task_delivered_work,
     };
@@ -12707,6 +12789,45 @@ mod tests {
         // An empty terminal set never reaches the call site, but must not
         // degrade into "delivered" if it ever does.
         assert!(!task_delivered_work(std::iter::empty()));
+    }
+
+    /// A DIY stage's output must end up in a commit, so the next stage starts
+    /// from a clean tree instead of inheriting — and being credited with — it.
+    #[tokio::test]
+    async fn auto_commit_captures_stage_output_and_leaves_a_clean_tree() {
+        let (_temp, repo_path) = init_test_repo();
+        std::fs::write(repo_path.join("base.txt"), "base").expect("seed file");
+        commit_all(&repo_path, "base");
+
+        std::fs::write(repo_path.join("frontend.tsx"), "stage output").expect("stage file");
+
+        let hash = auto_commit_working_tree(&repo_path, "chore: stage", "test", "task-1")
+            .await
+            .expect("a dirty tree must produce a commit");
+        assert_eq!(hash, run_git(&repo_path, &["rev-parse", "HEAD"]));
+        assert!(
+            run_git(&repo_path, &["status", "--porcelain"]).is_empty(),
+            "the next stage must start from a clean tree"
+        );
+        assert!(
+            run_git(&repo_path, &["show", "--name-only", "--format=", "HEAD"])
+                .contains("frontend.tsx")
+        );
+    }
+
+    /// A stage that produced nothing must not manufacture an empty commit —
+    /// that would read as delivered work and re-open the false-success hole.
+    #[tokio::test]
+    async fn auto_commit_makes_no_commit_when_the_stage_produced_nothing() {
+        let (_temp, repo_path) = init_test_repo();
+        std::fs::write(repo_path.join("base.txt"), "base").expect("seed file");
+        let base = commit_all(&repo_path, "base");
+
+        assert_eq!(
+            auto_commit_working_tree(&repo_path, "chore: stage", "test", "task-1").await,
+            None
+        );
+        assert_eq!(run_git(&repo_path, &["rev-parse", "HEAD"]), base);
     }
 
     fn run_git(repo_path: &Path, args: &[&str]) -> String {
