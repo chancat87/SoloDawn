@@ -122,26 +122,39 @@ struct StallRecoveryTracker {
 /// With 30s cooldown, 10 attempts = ~5 minutes of stall tolerance.
 const MAX_STALL_RECOVERY_ATTEMPTS: u32 = 10;
 
-/// Terminal status recorded when the stall detector force-finishes a terminal.
+/// Whether a force-finished terminal actually delivered anything.
 ///
-/// Every force-finish site reaches that point precisely because the CLI is hung,
-/// frozen, or swallowed its instruction — it delivered nothing. Recording
-/// `"completed"` there made the workflow report success with zero artifacts: a
-/// 3-terminal DIY workflow whose CLI never left its TUI was stamped
-/// `completed` in ~6 minutes with an empty working tree (reproduced across
-/// 6 of 11 rounds in the 2026-08-08 manual-workflow test report, and the same
-/// false-success the workspace-mode report describes). `"failed"` is the honest
-/// value and is equivalent for progression: `auto_complete_stalled_tasks`
-/// treats `completed` and `failed` identically when deciding a task is done, so
-/// nothing deadlocks — the outcome merely stops lying.
-const STALL_FORCE_FINISH_STATUS: &str = TERMINAL_STATUS_FAILED;
+/// The stall detector is the *only* way a DIY-workflow terminal reaches a final
+/// state: without a commit `git_watcher` never publishes `TerminalCompleted`, so
+/// a productive agent that finished and went quiet and a CLI that never left its
+/// welcome screen both arrive at the same force-finish sites. Recording
+/// `"completed"` unconditionally is what let a workflow report success over an
+/// empty working tree — 6 of 11 rounds in the 2026-08-08 manual-workflow test
+/// report were stamped `completed` in 6-8 minutes with zero artifacts.
+///
+/// Discriminate on the two forms delivered work can take, in the order they are
+/// cheap to check: a recorded commit, or changes sitting in the working tree
+/// (DIY agents routinely leave work uncommitted — every round in that report had
+/// `last_commit_hash = null` yet three rounds produced a full project).
+fn force_finish_status(has_commit: bool, worktree_changes: Option<(usize, usize)>) -> &'static str {
+    if has_commit {
+        return TERMINAL_STATUS_COMPLETED;
+    }
+    match worktree_changes {
+        Some((tracked, untracked)) if tracked + untracked > 0 => TERMINAL_STATUS_COMPLETED,
+        Some(_) => TERMINAL_STATUS_FAILED,
+        // Working tree unreadable: refuse to manufacture either verdict and keep
+        // the historical value so the workflow still terminates.
+        None => TERMINAL_STATUS_COMPLETED,
+    }
+}
 
 /// Whether a task whose terminals have all finished actually delivered work.
 ///
 /// At least one terminal must have reached `completed`. When every terminal ended
 /// `failed`/`cancelled` (or never started), the task produced nothing and must be
 /// reported as failed — stamping it `completed` is what let a workflow report
-/// success over an empty working tree. See [`STALL_FORCE_FINISH_STATUS`].
+/// success over an empty working tree. See [`force_finish_status`].
 fn task_delivered_work<'a>(terminal_statuses: impl IntoIterator<Item = &'a str>) -> bool {
     terminal_statuses
         .into_iter()
@@ -2038,7 +2051,7 @@ impl OrchestratorAgent {
                             if let Err(e) = db::models::Terminal::set_completed_if_unfinished(
                                 &self.db.pool,
                                 &terminal.id,
-                                STALL_FORCE_FINISH_STATUS,
+                                self.stall_force_finish_status(&task, terminal).await,
                             )
                             .await
                             {
@@ -2085,7 +2098,7 @@ impl OrchestratorAgent {
                             if let Err(e) = db::models::Terminal::set_completed_if_unfinished(
                                 &self.db.pool,
                                 &terminal.id,
-                                STALL_FORCE_FINISH_STATUS,
+                                self.stall_force_finish_status(&task, terminal).await,
                             )
                             .await
                             {
@@ -2109,7 +2122,7 @@ impl OrchestratorAgent {
                         if let Err(e) = db::models::Terminal::set_completed_if_unfinished(
                             &self.db.pool,
                             &terminal.id,
-                            STALL_FORCE_FINISH_STATUS,
+                            self.stall_force_finish_status(&task, terminal).await,
                         )
                         .await
                         {
@@ -2140,7 +2153,7 @@ impl OrchestratorAgent {
                     if let Err(e) = db::models::Terminal::set_completed_if_unfinished(
                         &self.db.pool,
                         &terminal.id,
-                        STALL_FORCE_FINISH_STATUS,
+                        self.stall_force_finish_status(&task, terminal).await,
                     )
                     .await
                     {
@@ -9366,6 +9379,44 @@ impl OrchestratorAgent {
         .await
     }
 
+    /// Terminal status to record when force-finishing a stalled `terminal`.
+    ///
+    /// Gathers the evidence [`force_finish_status`] judges on: the terminal's
+    /// recorded commit, else whether its working tree holds any change.
+    async fn stall_force_finish_status(
+        &self,
+        task: &db::models::WorkflowTask,
+        terminal: &db::models::Terminal,
+    ) -> &'static str {
+        let has_commit = terminal
+            .last_commit_hash
+            .as_deref()
+            .is_some_and(|hash| !hash.trim().is_empty());
+        if has_commit {
+            return force_finish_status(true, None);
+        }
+
+        let worktree_changes = match self.resolve_task_quality_root(task).await {
+            Ok(root) => tokio::task::spawn_blocking(move || {
+                crate::services::git::GitService::new().get_worktree_change_counts(&root)
+            })
+            .await
+            .ok()
+            .and_then(Result::ok),
+            Err(e) => {
+                tracing::warn!(
+                    task_id = %task.id,
+                    terminal_id = %terminal.id,
+                    error = %e,
+                    "Cannot resolve working directory to judge force-finished terminal; \
+                     keeping the historical completed status"
+                );
+                None
+            }
+        };
+        force_finish_status(false, worktree_changes)
+    }
+
     async fn resolve_task_quality_root(
         &self,
         task: &db::models::WorkflowTask,
@@ -12576,8 +12627,8 @@ mod tests {
     use super::{
         BlockerKey, BlockerMultiset, Duration, JsPackageManager, LOOP_PAUSE_PLATEAU_ROUNDS,
         LOOP_PAUSE_REGRESSION_ROUNDS, LoopProgressClass, OrchestratorAgent,
-        STALL_FORCE_FINISH_STATUS, StallRecoveryTracker, classify_loop_progress,
-        compute_blocker_multiset, ensure_js_deps_installed_for_gate,
+        StallRecoveryTracker, classify_loop_progress, compute_blocker_multiset,
+        ensure_js_deps_installed_for_gate, force_finish_status,
         is_quality_run_only_infra_blockers, reset_js_bootstrap_cache_for_test,
         task_delivered_work,
     };
@@ -12592,12 +12643,28 @@ mod tests {
     };
 
     #[test]
-    fn stall_force_finish_is_reported_as_failure_not_success() {
-        // Every stall force-finish site is reached because the CLI is hung,
-        // frozen, or swallowed its instruction — nothing was delivered. If this
-        // ever reads "completed" again, a DIY workflow whose CLI never left its
-        // TUI will report success over an empty working tree.
-        assert_eq!(STALL_FORCE_FINISH_STATUS, "failed");
+    fn force_finish_reports_failure_when_nothing_was_produced() {
+        // The exact reported shape: CLI never left its TUI, no commit, empty
+        // working tree. Must not be dressed up as success.
+        assert_eq!(force_finish_status(false, Some((0, 0))), "failed");
+    }
+
+    #[test]
+    fn force_finish_reports_success_when_work_landed() {
+        // A DIY agent that produced a project but never committed — three of the
+        // eleven reported rounds looked exactly like this.
+        assert_eq!(force_finish_status(false, Some((0, 12))), "completed");
+        assert_eq!(force_finish_status(false, Some((3, 0))), "completed");
+        // A committing agent (agent-planned mode) leaves a clean tree.
+        assert_eq!(force_finish_status(true, Some((0, 0))), "completed");
+        assert_eq!(force_finish_status(true, None), "completed");
+    }
+
+    #[test]
+    fn force_finish_does_not_fabricate_failure_when_tree_is_unreadable() {
+        // No commit and no readable working tree: keep the historical value so
+        // the workflow still terminates instead of inventing a verdict.
+        assert_eq!(force_finish_status(false, None), "completed");
     }
 
     #[test]
