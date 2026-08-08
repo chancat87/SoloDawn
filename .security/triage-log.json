@@ -1,6 +1,6 @@
 {
   "schema": "solodawn-security-triage-v1",
-  "updated_at": "2026-08-08T07:30:00Z",
+  "updated_at": "2026-08-08T10:30:00Z",
   "entries": {
     "audit:logging-filesystem-410": {
       "alert": "scripts/audit-security.sh 日志安全检查误报：crates/services/src/services/filesystem.rs:410 `tracing::trace!(\"Cancellation token triggered\")`",
@@ -71,6 +71,14 @@
       "action": "无需新修复。维持等待 CNB 扫描器对 main 重扫后自动关闭，或由人工在 CNB 安全页关闭旧告警。",
       "date": "2026-08-08"
     },
+    "review:2026-08-08-glib-2086003462864535552": {
+      "alert": "CNB 中危依赖漏洞 glib@0.18.5（GHSA-wrw7-89jp-8q8g，Cargo.lock:2432）告警 id 2086003462864535552（2026-08-08T08:15:56Z 新建，occur_version=41d54504）",
+      "verdict": "confirmed_real_requires_human",
+      "reason": "2026-08-08 复核（新告警 id 2086003462864535552，与既有 cnb:2085471182022676480 / review:2026-08-08-glib 同源同版本）：Cargo.lock 中 glib 仍为 0.18.5；依赖链 crates/tray → tray-icon 0.19.3 → libappindicator 0.9.0 → gtk 0.18.2 → glib ^0.18 全部约束 ^0.18，crates.io 上 gtk 0.20+ 不存在，glib 0.20.0 在当前依赖树不可解析。VariantStrIter 无直接调用（仅 Linux 桌面托盘场景传递引入）。扫描器已对最新 main（41d54504 即上次 triage 提交）重扫，告警仍未关闭，说明版本未变。",
+      "basis": "Cargo.lock 实查（glib=0.18.5 / gtk=0.18.2 / tray-icon=0.19.3）；repo-code-issue API 确认 VUL_WARN 全量仅此 1 条；上游 advisory GHSA-wrw7-89jp-8q8g fixed=0.20.0 为主版本且不可解析。",
+      "action": "维持 open 待人工/上游跟进。不创建无效修复 PR（升级不可解析），不降低安全标准，不扩大忽略范围。",
+      "date": "2026-08-08"
+    },
     "review:2026-08-08-glib": {
       "alert": "复核 CNB 中危依赖漏洞 glib@0.18.5（GHSA-wrw7-89jp-8q8g）：维持需人工判断且无可行升级路径",
       "verdict": "confirmed_real_requires_human",
@@ -82,10 +90,18 @@
     "review:2026-08-08-sonar-s6471": {
       "alert": "复核 GitHub CI：SonarCloud Code Analysis failure（Quality Gate B Security Rating on New Code）",
       "verdict": "ci_issue_requires_human_sonar_side",
+      "attempts": 3,
+      "needs_human": true,
       "reason": "2026-08-08 复核：SonarCloud 项目 main 分支 Quality Gate ERROR（new_security_rating=2，required ≥ A）。New Code 周期内 2 条 OPEN docker:S6471：.ci/Dockerfile.security-patrol:19 与 .ci/Dockerfile.security-verify:21（FROM node root 用户，MINOR）。两条均创建于 2026-08-07，属 leak period 内。",
       "basis": "SonarCloud project_status/issues API 实查：sinceLeakPeriod 返回 total=2 且均为 docker:S6471；check-runs API 确认唯一 failed 项为 SonarCloud Code Analysis；github-status 显示 cnb_main_sha==github_main_sha==6d50c6758，同步正常。新增实证：最新分析（6d50c6758，2026-08-08T01:23Z）仍在 .ci 文件产生新 issue（S7031/S7026/S6570 等 CODE_SMELL，created 08-08T01:22:44Z），证明 sonar.exclusions 文件级排除对 Docker 语言分析器本身未生效（不仅是不回溯历史 issue），仓库侧无有效手段在代码内关闭这些 Docker 分析器告警。",
       "action": "该两条 S6471 已由历轮判定为有意设计（CNB 流水线专用工具链/Agent 镜像需 root，非对外服务，非真实漏洞）。仓库侧已穷尽手段：文件级排除 sonar.exclusions、multicriteria、多轮 # NOSONAR 注释，均无法关闭 SonarCloud 已存在的历史 OPEN issue（Sonar 的 exclusion/ignore 仅作用于后续新 issue，不回溯；且实测 sonar.exclusions 对 Docker 分析器不生效，最新分析仍在 .ci 文件产生新 issue）。需人工在 SonarCloud 侧将这两条 issue 标记 Won\\u0027t Fix / False Positive（或调整质量门禁阈值）。本轮不创建无效修复 PR。",
-      "date": "2026-08-08"
+      "date": "2026-08-08",
+      "rounds": [
+        "round1(08-07 晚): NOSONAR(S6471)/NOSONAR(S8482) 圆括号语法不被识别，PR #15 → 无效",
+        "round2(08-08 凌晨): multicriteria 拆分为 e2a/e2b 精确到规则×文件，Automatic Analysis 不读 sonar-project.properties → 无效",
+        "round3(08-08 上午): sonar.exclusions 文件级排除 .ci Dockerfile，Docker 分析器仍对新文件产新 issue → 无效"
+      ],
+      "stop_reason": "attempts=3 已达止损上限。三次尝试覆盖仓库侧全部可行手段（NOSONAR 注释 / multicriteria / sonar.exclusions），且已确认失败检查为 SonarCloud Automatic Analysis（不读 sonar-project.properties，exclusion 不回溯历史 issue）。同一手段连续两轮无效已验证「旋钮没接线」——需人工在 SonarCloud 侧标记 Won't Fix/False Positive 或调整质量门禁阈值。本轮不再提任何修复 PR。"
     }
   }
 }
