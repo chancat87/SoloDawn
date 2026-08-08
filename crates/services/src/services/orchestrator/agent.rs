@@ -118,9 +118,35 @@ struct StallRecoveryTracker {
     recovery_counts: HashMap<String, u32>,
 }
 
-/// Maximum stall recovery attempts before force-completing a terminal.
+/// Maximum stall recovery attempts before force-finishing a terminal.
 /// With 30s cooldown, 10 attempts = ~5 minutes of stall tolerance.
 const MAX_STALL_RECOVERY_ATTEMPTS: u32 = 10;
+
+/// Terminal status recorded when the stall detector force-finishes a terminal.
+///
+/// Every force-finish site reaches that point precisely because the CLI is hung,
+/// frozen, or swallowed its instruction — it delivered nothing. Recording
+/// `"completed"` there made the workflow report success with zero artifacts: a
+/// 3-terminal DIY workflow whose CLI never left its TUI was stamped
+/// `completed` in ~6 minutes with an empty working tree (reproduced across
+/// 6 of 11 rounds in the 2026-08-08 manual-workflow test report, and the same
+/// false-success the workspace-mode report describes). `"failed"` is the honest
+/// value and is equivalent for progression: `auto_complete_stalled_tasks`
+/// treats `completed` and `failed` identically when deciding a task is done, so
+/// nothing deadlocks — the outcome merely stops lying.
+const STALL_FORCE_FINISH_STATUS: &str = TERMINAL_STATUS_FAILED;
+
+/// Whether a task whose terminals have all finished actually delivered work.
+///
+/// At least one terminal must have reached `completed`. When every terminal ended
+/// `failed`/`cancelled` (or never started), the task produced nothing and must be
+/// reported as failed — stamping it `completed` is what let a workflow report
+/// success over an empty working tree. See [`STALL_FORCE_FINISH_STATUS`].
+fn task_delivered_work<'a>(terminal_statuses: impl IntoIterator<Item = &'a str>) -> bool {
+    terminal_statuses
+        .into_iter()
+        .any(|status| status == TERMINAL_STATUS_COMPLETED)
+}
 const TERMINAL_INPUT_FAILURE_LIMIT: u32 = 3;
 const FINAL_REPAIR_TASK_NAME: &str = "Final Integration Repair";
 const FINAL_REPAIR_MAX_ROUNDS: usize = 4;
@@ -1453,21 +1479,52 @@ impl OrchestratorAgent {
                             }
                         }
 
-                        tracing::info!(
-                            task_id = %task.id, task_name = %task.name,
-                            "Auto-completing task: all terminals finished but task still running"
-                        );
-                        db::models::WorkflowTask::update_status(
-                            &self.db.pool,
-                            &task.id,
-                            "completed",
-                        )
-                        .await?;
-                        self.persist_event(
-                            "task_status",
-                            &format!("Task \"{}\" completed", task.name),
-                        )
-                        .await;
+                        // A task whose every terminal ended non-completed delivered
+                        // nothing — stamping it "completed" is how a workflow ends
+                        // up reporting success over an empty working tree. Report
+                        // the failure instead so the run is visibly bad rather than
+                        // silently wrong.
+                        if task_delivered_work(task_terminals.iter().map(|t| t.status.as_str())) {
+                            tracing::info!(
+                                task_id = %task.id, task_name = %task.name,
+                                "Auto-completing task: all terminals finished but task still running"
+                            );
+                            db::models::WorkflowTask::update_status(
+                                &self.db.pool,
+                                &task.id,
+                                TASK_STATUS_COMPLETED,
+                            )
+                            .await?;
+                            self.persist_event(
+                                "task_status",
+                                &format!("Task \"{}\" completed", task.name),
+                            )
+                            .await;
+                        } else {
+                            tracing::warn!(
+                                task_id = %task.id, task_name = %task.name,
+                                terminal_statuses = ?task_terminals
+                                    .iter()
+                                    .map(|t| t.status.as_str())
+                                    .collect::<Vec<_>>(),
+                                "Auto-failing task: every terminal finished without completing, \
+                                 so the task produced no work"
+                            );
+                            db::models::WorkflowTask::update_status(
+                                &self.db.pool,
+                                &task.id,
+                                TASK_STATUS_FAILED,
+                            )
+                            .await?;
+                            self.persist_event(
+                                "task_status",
+                                &format!(
+                                    "Task \"{}\" failed: no terminal completed, no work produced",
+                                    task.name
+                                ),
+                            )
+                            .await;
+                        }
                     }
                 }
                 "pending" => {
@@ -1976,16 +2033,16 @@ impl OrchestratorAgent {
                                 task_id = %task.id,
                                 terminal_id = %terminal.id,
                                 process_id = ?terminal.process_id,
-                                "Idle-prompt + CPU flat (process hung / instruction swallowed and stuck); re-dispatch of same process ineffective — force-completing to spawn fresh claude"
+                                "Idle-prompt + CPU flat (process hung / instruction swallowed and stuck); re-dispatch of same process ineffective — force-failing to spawn fresh claude"
                             );
                             if let Err(e) = db::models::Terminal::set_completed_if_unfinished(
                                 &self.db.pool,
                                 &terminal.id,
-                                "completed",
+                                STALL_FORCE_FINISH_STATUS,
                             )
                             .await
                             {
-                                tracing::error!(terminal_id = %terminal.id, error = %e, "Failed to force-complete idle+flat terminal");
+                                tracing::error!(terminal_id = %terminal.id, error = %e, "Failed to force-fail idle+flat terminal");
                             }
                             continue;
                         }
@@ -2023,16 +2080,16 @@ impl OrchestratorAgent {
                                 task_id = %task.id,
                                 terminal_id = %terminal.id,
                                 process_id = ?terminal.process_id,
-                                "Process alive with frozen spinner but flat CPU over sample window — hung/deadlocked, not generating; force-completing to avoid 1h hard-cap waste"
+                                "Process alive with frozen spinner but flat CPU over sample window — hung/deadlocked, not generating; force-failing to avoid 1h hard-cap waste"
                             );
                             if let Err(e) = db::models::Terminal::set_completed_if_unfinished(
                                 &self.db.pool,
                                 &terminal.id,
-                                "completed",
+                                STALL_FORCE_FINISH_STATUS,
                             )
                             .await
                             {
-                                tracing::error!(terminal_id = %terminal.id, error = %e, "Failed to force-complete CPU-flat terminal");
+                                tracing::error!(terminal_id = %terminal.id, error = %e, "Failed to force-fail CPU-flat terminal");
                             }
                             continue;
                         }
@@ -2047,16 +2104,16 @@ impl OrchestratorAgent {
                             terminal_id = %terminal.id,
                             process_id = ?terminal.process_id,
                             quiet_cap_secs = Self::STALL_ALIVE_HARD_CAP.as_secs(),
-                            "Process alive but exceeded alive-quiet hard cap; force-completing frozen terminal"
+                            "Process alive but exceeded alive-quiet hard cap; force-failing frozen terminal"
                         );
                         if let Err(e) = db::models::Terminal::set_completed_if_unfinished(
                             &self.db.pool,
                             &terminal.id,
-                            "completed",
+                            STALL_FORCE_FINISH_STATUS,
                         )
                         .await
                         {
-                            tracing::error!(terminal_id = %terminal.id, error = %e, "Failed to force-complete frozen-alive terminal");
+                            tracing::error!(terminal_id = %terminal.id, error = %e, "Failed to force-fail frozen-alive terminal");
                         }
                         continue;
                     }
@@ -2078,16 +2135,16 @@ impl OrchestratorAgent {
                         task_id = %task.id,
                         terminal_id = %terminal.id,
                         recovery_count = tracker.recovery_count(&terminal.id),
-                        "Force-completing terminal after max stall recovery attempts"
+                        "Force-failing terminal after max stall recovery attempts"
                     );
                     if let Err(e) = db::models::Terminal::set_completed_if_unfinished(
                         &self.db.pool,
                         &terminal.id,
-                        "completed",
+                        STALL_FORCE_FINISH_STATUS,
                     )
                     .await
                     {
-                        tracing::error!(terminal_id = %terminal.id, error = %e, "Failed to force-complete stalled terminal");
+                        tracing::error!(terminal_id = %terminal.id, error = %e, "Failed to force-fail stalled terminal");
                     }
                     continue;
                 }
@@ -12518,9 +12575,11 @@ mod tests {
 
     use super::{
         BlockerKey, BlockerMultiset, Duration, JsPackageManager, LOOP_PAUSE_PLATEAU_ROUNDS,
-        LOOP_PAUSE_REGRESSION_ROUNDS, LoopProgressClass, OrchestratorAgent, StallRecoveryTracker,
-        classify_loop_progress, compute_blocker_multiset, ensure_js_deps_installed_for_gate,
+        LOOP_PAUSE_REGRESSION_ROUNDS, LoopProgressClass, OrchestratorAgent,
+        STALL_FORCE_FINISH_STATUS, StallRecoveryTracker, classify_loop_progress,
+        compute_blocker_multiset, ensure_js_deps_installed_for_gate,
         is_quality_run_only_infra_blockers, reset_js_bootstrap_cache_for_test,
+        task_delivered_work,
     };
     use crate::services::orchestrator::{
         BusMessage, LLMClient, LLMMessage, LLMResponse, LLMUsage, MessageBus, MockLLMClient,
@@ -12531,6 +12590,33 @@ mod tests {
             TERMINAL_STATUS_WORKING, WORKFLOW_STATUS_RUNNING,
         },
     };
+
+    #[test]
+    fn stall_force_finish_is_reported_as_failure_not_success() {
+        // Every stall force-finish site is reached because the CLI is hung,
+        // frozen, or swallowed its instruction — nothing was delivered. If this
+        // ever reads "completed" again, a DIY workflow whose CLI never left its
+        // TUI will report success over an empty working tree.
+        assert_eq!(STALL_FORCE_FINISH_STATUS, "failed");
+    }
+
+    #[test]
+    fn task_delivered_work_requires_a_completed_terminal() {
+        assert!(task_delivered_work(["completed"]));
+        assert!(task_delivered_work(["failed", "completed", "not_started"]));
+    }
+
+    #[test]
+    fn task_delivered_work_rejects_all_non_completed_terminals() {
+        // The exact shape of the reported failure: three stall-force-finished
+        // terminals, zero artifacts. Must NOT be stamped as a completed task.
+        assert!(!task_delivered_work(["failed", "failed", "failed"]));
+        assert!(!task_delivered_work(["failed", "cancelled"]));
+        assert!(!task_delivered_work(["not_started"]));
+        // An empty terminal set never reaches the call site, but must not
+        // degrade into "delivered" if it ever does.
+        assert!(!task_delivered_work(std::iter::empty()));
+    }
 
     fn run_git(repo_path: &Path, args: &[&str]) -> String {
         let output = Command::new("git")
