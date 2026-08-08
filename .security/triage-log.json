@@ -1,6 +1,6 @@
 {
   "schema": "solodawn-security-triage-v1",
-  "updated_at": "2026-08-09T00:10:00Z",
+  "updated_at": "2026-08-09T01:00:00Z",
   "entries": {
     "audit:logging-filesystem-410": {
       "alert": "scripts/audit-security.sh 日志安全检查误报：crates/services/src/services/filesystem.rs:410 `tracing::trace!(\"Cancellation token triggered\")`",
@@ -143,6 +143,18 @@
       "reason": "github-status.json：cnb_main_sha==github_main_sha==37ff6776687cba97da121a6827a6d0d361b529e1，同步正常，无需等待再复核。github_ci：total=16，failed=1（SonarCloud Code Analysis，见上条 needs_human），pending=1（E2E Orchestration (windows-latest)，in_progress 非失败，为常规 CI 进行中）。本地 scripts/audit-security.sh 通过，无新增本地告警。",
       "basis": "GitHub check-runs API 实查 37ff677668：13 success / 1 failure（SonarCloud Code Analysis）/ 1 in_progress（E2E Orchestration (windows-latest)）/ 1 skipped（Frontend Check）。",
       "action": "无需处理。SonarCloud 失败项已走止损 needs_human；E2E pending 由 GitHub 自身继续运行，下轮巡检复核。",
+      "date": "2026-08-08"
+    },
+    "review:2026-08-08-sonar-s6471-rootcause": {
+      "alert": "docker:S6471 ×2（.ci/Dockerfile.security-patrol、.ci/Dockerfile.security-verify 默认 root）长期压不掉，SonarCloud Quality Gate new_security_rating=2 ERROR",
+      "verdict": "root_cause_found_partially_fixed",
+      "reason": "前几轮的结论「Automatic Analysis 不读 sonar-project.properties，仓库侧无手段」只到了中间层。再往下查到真正的根因：本仓库 GitHub secrets 里根本没有 SONAR_TOKEN（gh secret list 仅 E2E_API_KEY / E2E_BASE_URL / E2E_MODEL），ci-quality.yml 的 SonarScan 每次都以 'Not authorized or project not found' / EXECUTION FAILURE / exit code 3 结束；而那一步写了 continue-on-error: true，job 照样报绿。于是 CI scanner 从未成功上传过一次分析，SonarCloud 上全部分析都来自 Automatic Analysis —— 仓库里那份 sonar.issue.ignore.multicriteria 抑制从写下起就一次都没生效过。",
+      "basis": "gh secret list（无 SONAR_TOKEN）；gh run view 31267354150 --log：'SONAR_TOKEN: ' 为空、'##[warning]Running this GitHub Action without SONAR_TOKEN is not recommended'、'ERROR Not authorized or project not found'、'INFO EXECUTION FAILURE'、'Action failed: ... exit code 3'；sonarcloud api/project_analyses/search 每次 push 后 1 分钟内即有分析（Automatic Analysis 特征）；api/issues/search 实查 docker:S6471 ×2 仍 OPEN、type=VULNERABILITY、且是新代码期内仅有的两条 VULNERABILITY，对应 new_security_rating=2。",
+      "action": "仓库侧已修可修的部分：ci-quality.yml 改为按 secret 判定 —— 无 token 显式跳过并在 warning / job summary 写明「suppressions 未生效、当前跑的是 Automatic Analysis」；有 token 而扫描失败则直接失败，不再 continue-on-error 掩盖（commit d101c8528）。剩余两步只能由仓库管理员在界面完成：(1) 建 SonarCloud user token 存为 GitHub secret SONAR_TOKEN；(2) 在 SonarCloud 项目设置里关掉 Automatic Analysis（两种分析互斥）。做完之后仓库里已有的 multicriteria 抑制即会生效，无需再改配置。另：不采用「在 .ci/ 两个 Dockerfile 末尾加非 root USER」来消除告警 —— 这两个镜像是 CNB 流水线运行环境，stage 需读写 CNB 挂载的 /workspace，挂载点属主由 CNB 决定，改非 root 有让每日巡检整条挂掉的实际风险；为一条针对不对外交付镜像的 MINOR 告警换这个风险不划算。",
+      "supersedes": [
+        "review:2026-08-08-sonar-s6471",
+        "review:2026-08-08-20h-sonar-s6471"
+      ],
       "date": "2026-08-08"
     }
   }
