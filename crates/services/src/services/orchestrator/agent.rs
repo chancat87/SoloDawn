@@ -8225,6 +8225,30 @@ impl OrchestratorAgent {
             tracing::warn!(error = %e, "Failed to publish task running status event");
         }
 
+        // Let the CLI's TUI finish drawing before pasting: an instruction that
+        // arrives while the composer is still being built is simply lost, and the
+        // terminal then idles with nothing to do. See
+        // `submit_policy::DISPATCH_MIN_SETTLE_MS` for the measured thresholds.
+        // Without `runtime_actions` there is no PTY handle to observe, so this
+        // degrades to no wait at all — the same behaviour as before this guard.
+        if let Some(runtime) = self.runtime_actions.as_ref() {
+            runtime
+                .process_manager()
+                .wait_for_output_settled(
+                    &active_terminal.id,
+                    Duration::from_millis(
+                        crate::services::terminal::submit_policy::DISPATCH_MIN_SETTLE_MS,
+                    ),
+                    Duration::from_millis(
+                        crate::services::terminal::submit_policy::DISPATCH_QUIET_SETTLE_MS,
+                    ),
+                    Duration::from_millis(
+                        crate::services::terminal::submit_policy::DISPATCH_MAX_SETTLE_MS,
+                    ),
+                )
+                .await;
+        }
+
         if Self::needs_explicit_submit(&active_terminal) {
             self.publish_terminal_input_checked(
                 &workflow_id,

@@ -2356,6 +2356,7 @@ async fn start_workflow(
         {
             let dispatch_bus = deployment.message_bus().clone();
             let dispatch_db = deployment.db().pool.clone();
+            let dispatch_process_manager = deployment.process_manager().clone();
             let dispatched_terminals = Arc::clone(&dispatched_terminals);
             let dispatch_tasks: Vec<_> = tasks
                 .iter()
@@ -2437,7 +2438,24 @@ async fn start_workflow(
                             let instruction = task_description.as_deref().unwrap_or(task_name);
                             if !instruction.is_empty() {
                                 // Small delay to ensure Claude Code has initialized
-                                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                                // Wait for the CLI's TUI to stop drawing before
+                                // pasting. A flat 2s sleep used to be enough on
+                                // paper and was not in practice — see
+                                // submit_policy::DISPATCH_MIN_SETTLE_MS.
+                                dispatch_process_manager
+                                    .wait_for_output_settled(
+                                        &terminal.id,
+                                        std::time::Duration::from_millis(
+                                            submit_policy::DISPATCH_MIN_SETTLE_MS,
+                                        ),
+                                        std::time::Duration::from_millis(
+                                            submit_policy::DISPATCH_QUIET_SETTLE_MS,
+                                        ),
+                                        std::time::Duration::from_millis(
+                                            submit_policy::DISPATCH_MAX_SETTLE_MS,
+                                        ),
+                                    )
+                                    .await;
                                 // Arm the quiet-window monitor only now: before
                                 // this point the terminal is idle by design.
                                 dispatched_terminals

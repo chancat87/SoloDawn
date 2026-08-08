@@ -337,3 +337,199 @@ async fn probe_codex_dispatch_with_trust_answered() {
 async fn probe_claude_dispatch_with_trust_answered() {
     probe_dispatch_with_trust_answered("claude", &[420]).await;
 }
+
+#[tokio::test]
+#[ignore = "needs opencode installed; measures real TUI cold start"]
+async fn probe_opencode() {
+    probe("opencode", &[]).await;
+}
+
+#[tokio::test]
+#[ignore = "needs opencode installed; replays production's first dispatch"]
+async fn probe_opencode_dispatch() {
+    // opencode has no submit schedule: it relies on the payload's own trailing CR.
+    probe_dispatch("opencode", &[]).await;
+}
+
+#[tokio::test]
+#[ignore = "needs opencode installed; verifies the trust-modal fix"]
+async fn probe_opencode_dispatch_with_trust_answered() {
+    probe_dispatch_with_trust_answered("opencode", &[]).await;
+}
+
+/// Dispatch after a chosen settle delay, to find when a CLI's composer becomes
+/// reachable. Prints whether the instruction landed.
+async fn probe_dispatch_after(command: &str, settle: Duration) {
+    const MARKER: &str = "SOLODAWN-PROBE-MARKER";
+    let instruction = format!("Create a file named {MARKER}.txt containing the word ok.\r");
+
+    let manager = ProcessManager::new();
+    let workdir = tempfile::tempdir().expect("tempdir");
+    let spawn = SpawnCommand::new(command, workdir.path());
+    let terminal_id = format!("settle-{command}-{}", settle.as_millis());
+
+    let started = Instant::now();
+    manager
+        .spawn_pty_with_config(&terminal_id, &spawn, 120, 30)
+        .await
+        .unwrap_or_else(|e| panic!("failed to spawn {command}: {e}"));
+    let mut subscription = manager
+        .subscribe_output(&terminal_id, None)
+        .await
+        .expect("subscribe");
+    let writer = manager
+        .get_handle(&terminal_id)
+        .await
+        .expect("handle")
+        .writer
+        .expect("pty writer");
+
+    tokio::time::sleep(settle).await;
+    write_pty(&writer, &instruction).await;
+
+    let deadline = settle + Duration::from_secs(20);
+    let mut screen = String::new();
+    while started.elapsed() < deadline {
+        let remaining = deadline.saturating_sub(started.elapsed());
+        match tokio::time::timeout(remaining, subscription.recv()).await {
+            Ok(Ok(chunk)) => screen.push_str(&chunk.text),
+            _ => break,
+        }
+    }
+    let _ = tokio::time::timeout(Duration::from_secs(10), manager.kill_terminal(&terminal_id)).await;
+
+    println!(
+        "settle={:>6}ms  marker_reached_composer={}",
+        settle.as_millis(),
+        strip_ansi(&screen).contains(MARKER)
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs opencode installed; sweeps the dispatch delay"]
+async fn probe_opencode_settle_sweep() {
+    for secs in [2, 3, 4, 6, 9] {
+        probe_dispatch_after("opencode", Duration::from_secs(secs)).await;
+    }
+}
+
+/// Dispatch through the **whole production readiness stack**: the trust-modal
+/// auto-answer (`prompt_watcher::is_trust_folder_prompt`) running concurrently,
+/// then `ProcessManager::wait_for_output_settled` with the real
+/// `submit_policy::DISPATCH_*` constants, then the CLI's submit schedule.
+///
+/// This is the acceptance check for both cold-start fixes together: it must
+/// print `marker_reached_composer=true` for every CLI, including ones whose TUI
+/// renders later than the old flat 2s sleep.
+async fn probe_dispatch_adaptive(command: &str, submit_schedule_ms: &[u64]) {
+    use services::services::terminal::submit_policy;
+
+    const MARKER: &str = "SOLODAWN-PROBE-MARKER";
+    let instruction = format!("Create a file named {MARKER}.txt containing the word ok.\r");
+
+    let manager = std::sync::Arc::new(ProcessManager::new());
+    let workdir = tempfile::tempdir().expect("tempdir");
+    let spawn = SpawnCommand::new(command, workdir.path());
+    let terminal_id = format!("adaptive-{command}");
+
+    let started = Instant::now();
+    manager
+        .spawn_pty_with_config(&terminal_id, &spawn, 120, 30)
+        .await
+        .unwrap_or_else(|e| panic!("failed to spawn {command}: {e}"));
+    let mut subscription = manager
+        .subscribe_output(&terminal_id, None)
+        .await
+        .expect("subscribe");
+    let writer = manager
+        .get_handle(&terminal_id)
+        .await
+        .expect("handle")
+        .writer
+        .expect("pty writer");
+
+    // Stand in for the prompt watcher: answer the folder-trust modal the moment
+    // it appears, so the composer becomes reachable at all.
+    let modal_watcher = tokio::spawn({
+        let manager = manager.clone();
+        let terminal_id = terminal_id.clone();
+        let writer = writer.clone();
+        async move {
+            let Ok(mut sub) = manager.subscribe_output(&terminal_id, None).await else {
+                return None;
+            };
+            let watch_started = Instant::now();
+            let mut seen = String::new();
+            while watch_started.elapsed() < Duration::from_secs(15) {
+                let remaining = Duration::from_secs(15).saturating_sub(watch_started.elapsed());
+                match tokio::time::timeout(remaining, sub.recv()).await {
+                    Ok(Ok(chunk)) => {
+                        seen.push_str(&chunk.text);
+                        let visible = strip_ansi(&seen).to_ascii_lowercase();
+                        let is_modal = (visible.contains("trust this folder")
+                            || visible.contains("trust the files in this folder")
+                            || visible.contains("trusting the directory"))
+                            && visible.contains("1. yes");
+                        if is_modal {
+                            write_pty(&writer, "1\r").await;
+                            return Some(watch_started.elapsed().as_millis());
+                        }
+                    }
+                    _ => break,
+                }
+            }
+            None
+        }
+    });
+
+    let waited = manager
+        .wait_for_output_settled(
+            &terminal_id,
+            Duration::from_millis(submit_policy::DISPATCH_MIN_SETTLE_MS),
+            Duration::from_millis(submit_policy::DISPATCH_QUIET_SETTLE_MS),
+            Duration::from_millis(submit_policy::DISPATCH_MAX_SETTLE_MS),
+        )
+        .await;
+    write_pty(&writer, &instruction).await;
+    for &delay in submit_schedule_ms {
+        tokio::time::sleep(Duration::from_millis(delay)).await;
+        write_pty(&writer, "\r").await;
+    }
+
+    let deadline = waited + Duration::from_secs(20);
+    let mut screen = String::new();
+    while started.elapsed() < deadline {
+        let remaining = deadline.saturating_sub(started.elapsed());
+        match tokio::time::timeout(remaining, subscription.recv()).await {
+            Ok(Ok(chunk)) => screen.push_str(&chunk.text),
+            _ => break,
+        }
+    }
+    let _ = tokio::time::timeout(Duration::from_secs(10), manager.kill_terminal(&terminal_id)).await;
+    let trust_answered_at = modal_watcher.await.ok().flatten();
+
+    println!(
+        "{command}: trust_answered_at={trust_answered_at:?}  settled_after={:>6}ms  \
+         marker_reached_composer={}",
+        waited.as_millis(),
+        strip_ansi(&screen).contains(MARKER)
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs opencode installed; verifies the adaptive settle fix"]
+async fn probe_opencode_dispatch_adaptive() {
+    probe_dispatch_adaptive("opencode", &[]).await;
+}
+
+#[tokio::test]
+#[ignore = "needs codex installed; verifies trust-modal + adaptive settle together"]
+async fn probe_codex_dispatch_adaptive() {
+    probe_dispatch_adaptive("codex", &[120, 360, 900]).await;
+}
+
+#[tokio::test]
+#[ignore = "needs claude installed; verifies trust-modal + adaptive settle together"]
+async fn probe_claude_dispatch_adaptive() {
+    probe_dispatch_adaptive("claude", &[420]).await;
+}

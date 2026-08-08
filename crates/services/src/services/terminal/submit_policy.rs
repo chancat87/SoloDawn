@@ -21,6 +21,48 @@
 //! Claude Code but left Codex's prompt sitting unsubmitted in the composer (the
 //! terminal "initialised, then did nothing").
 
+/// Shortest wait after PTY spawn before an instruction may be dispatched.
+///
+/// Was the whole policy — a flat 2s sleep — and it is measurably too short.
+/// Sweeping the delay against a real `opencode` 1.18.15 on this hardware
+/// (`tests/cli_tui_readiness_probe.rs::probe_opencode_settle_sweep`):
+///
+/// ```text
+/// settle=  2000ms  marker_reached_composer=false
+/// settle=  3000ms  marker_reached_composer=true
+/// settle=  4000ms  marker_reached_composer=true
+/// ```
+///
+/// Its TUI renders in a burst around +2.6s, so a 2s dispatch pastes into a
+/// composer that does not exist yet and the instruction is lost — the terminal
+/// then idles with nothing to do. A fast dev box missed the boundary by ~1s;
+/// a loaded machine spawning several CLIs at once misses it by more.
+pub const DISPATCH_MIN_SETTLE_MS: u64 = 2_000;
+
+/// How long PTY output must stay quiet before the TUI counts as settled.
+///
+/// Raising the flat delay to a bigger constant would just move the guess. A
+/// booting TUI writes in bursts and then stops; waiting for that stop adapts to
+/// whatever the machine is actually doing. Note the gap must be tolerant of a
+/// mid-boot pause — `opencode` emits at +795ms, goes quiet for ~1.75s, then
+/// renders at +2.55-2.64s — which is why this is combined with
+/// [`DISPATCH_MIN_SETTLE_MS`] rather than used alone.
+///
+/// Verified end-to-end against the three installed CLIs
+/// (`probe_{opencode,codex,claude}_dispatch_adaptive`), trust-modal auto-answer
+/// included:
+///
+/// ```text
+/// opencode: trust_answered_at=None     settled_after=3020ms  marker_reached_composer=true
+/// codex   : trust_answered_at=Some(0)  settled_after=3020ms  marker_reached_composer=true
+/// claude  : trust_answered_at=Some(0)  settled_after=3019ms  marker_reached_composer=true
+/// ```
+pub const DISPATCH_QUIET_SETTLE_MS: u64 = 1_000;
+
+/// Hard ceiling on settling, so a CLI that never stops drawing (spinners,
+/// progress bars, MCP startup chatter) still gets its instruction.
+pub const DISPATCH_MAX_SETTLE_MS: u64 = 15_000;
+
 /// Submit-keystroke delays (ms) for Codex — three spaced Enters.
 const CODEX_SUBMIT_SCHEDULE_MS: &[u64] = &[120, 360, 900];
 

@@ -1345,6 +1345,60 @@ impl ProcessManager {
         Ok(tracked.output_fanout.subscribe(from_seq))
     }
 
+    /// Block until a freshly spawned terminal's TUI has stopped drawing, so an
+    /// instruction dispatched afterwards lands in a composer that exists.
+    ///
+    /// Waits at least `min`, then until PTY output has been quiet for `quiet`,
+    /// giving up at `max` measured from entry. Returns the elapsed wait.
+    ///
+    /// See `submit_policy::DISPATCH_MIN_SETTLE_MS` for the measurements behind
+    /// the defaults and why a flat sleep is not sufficient.
+    pub async fn wait_for_output_settled(
+        &self,
+        terminal_id: &str,
+        min: Duration,
+        quiet: Duration,
+        max: Duration,
+    ) -> Duration {
+        let started = std::time::Instant::now();
+
+        // Subscribe before sleeping so nothing emitted during `min` is missed.
+        let subscription = self.subscribe_output(terminal_id, None).await.ok();
+        tokio::time::sleep(min).await;
+
+        let Some(mut subscription) = subscription else {
+            // No such terminal (or it died): the minimum wait is all we can do.
+            return started.elapsed();
+        };
+
+        loop {
+            let elapsed = started.elapsed();
+            if elapsed >= max {
+                tracing::debug!(
+                    terminal_id = %terminal_id,
+                    waited_ms = elapsed.as_millis(),
+                    "TUI never went quiet before the settle ceiling; dispatching anyway"
+                );
+                return elapsed;
+            }
+            let budget = quiet.min(max.saturating_sub(elapsed));
+            match tokio::time::timeout(budget, subscription.recv()).await {
+                // More output arrived — the TUI is still drawing, keep waiting.
+                Ok(Ok(_)) => continue,
+                // Quiet for the full window, or the stream ended: settled.
+                Ok(Err(_)) | Err(_) => {
+                    let elapsed = started.elapsed();
+                    tracing::debug!(
+                        terminal_id = %terminal_id,
+                        waited_ms = elapsed.as_millis(),
+                        "TUI settled; safe to dispatch"
+                    );
+                    return elapsed;
+                }
+            }
+        }
+    }
+
     /// Get latest emitted output sequence for a terminal.
     ///
     /// Returns None if terminal doesn't exist, or 0 if no output has been emitted yet.

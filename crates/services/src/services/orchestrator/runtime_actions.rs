@@ -411,6 +411,12 @@ impl RuntimeActionService {
         Ok(terminal)
     }
 
+    /// Shared PTY process manager, so callers that only hold the runtime-action
+    /// service (the orchestrator agent) can wait on terminal output.
+    pub fn process_manager(&self) -> &Arc<ProcessManager> {
+        &self.process_manager
+    }
+
     pub async fn try_start_terminal(&self, terminal_id: &str) -> Result<StartTerminalOutcome> {
         let terminal = Terminal::find_by_id(&self.db.pool, terminal_id)
             .await?
