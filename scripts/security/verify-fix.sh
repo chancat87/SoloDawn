@@ -143,11 +143,16 @@ fi
 # issue #5 第 7 条。这里补上这只眼睛。
 #
 # 只读 GitHub 公开 API，不需要任何凭证。
+#
+# `-L` 会跟随重定向，因此必须同时锁死协议：`--proto '=https'` 限制首次请求，
+# `--proto-redir '=https'` 限制重定向目标，否则一次 302 就能把这条"安全门禁的
+# 唯一眼睛"降级到明文 HTTP，判定结果可被中间人篡改（SonarCloud shell:S6506）。
+# 与 .ci/Dockerfile.security-verify、.github/actions/setup-rust 的写法保持一致。
 github_ci_state="not_checked"
 github_ci_failed_checks="[]"
 gh_sha="${CNB_COMMIT_SHA:-${CNB_BRANCH_SHA:-}}"
 if [[ -n "$gh_sha" ]] && command -v curl >/dev/null 2>&1; then
-  gh_json="$(curl -fsSL --max-time 30 \
+  gh_json="$(curl -fsSL --max-time 30 --proto '=https' --proto-redir '=https' \
     "https://api.github.com/repos/huanchong-99/SoloDawn/commits/${gh_sha}/check-runs" \
     2>/dev/null || true)"
   if echo "$gh_json" | jq -e '.check_runs?' >/dev/null 2>&1; then
