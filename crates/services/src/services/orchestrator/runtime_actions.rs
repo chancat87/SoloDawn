@@ -457,7 +457,7 @@ impl RuntimeActionService {
         self.publish_terminal_status(&workflow_id, &terminal.id, "starting")
             .await?;
 
-        let working_dir = self.resolve_workflow_working_dir(&workflow_id).await?;
+        let working_dir = self.resolve_terminal_working_dir(&task).await?;
         let launcher = TerminalLauncher::with_message_bus(
             self.db.clone(),
             Arc::new(CCSwitchService::new(self.db.clone())),
@@ -611,6 +611,31 @@ impl RuntimeActionService {
         Ok(terminal)
     }
 
+    /// Working directory a terminal for `task` must be launched in.
+    ///
+    /// Worktree-first, matching every other place that resolves a task's working
+    /// tree: `routes/workflows.rs::resolve_workflow_working_dir` (workflow start),
+    /// `agent.rs::resolve_task_quality_root` (quality gate) and
+    /// `agent.rs::trigger_merge` (merge). This path was the only one that skipped
+    /// the worktree lookup, so a terminal started here — a queued terminal
+    /// released by the concurrency limit, or one started by an orchestration
+    /// instruction — ran in the shared repo root while terminals started through
+    /// the workflow route ran in the task worktree. The two directories hold
+    /// different working trees, so a later stage could not see the files an
+    /// earlier stage had written, while the workflow still reported success.
+    async fn resolve_terminal_working_dir(&self, task: &WorkflowTask) -> Result<PathBuf> {
+        let base = crate::services::worktree_manager::WorktreeManager::get_worktree_base_dir();
+        if let Some(managed) = managed_worktree_dir(&base, &task.branch) {
+            tracing::info!(
+                task_id = %task.id,
+                worktree = %managed.display(),
+                "Terminal launching in task worktree"
+            );
+            return Ok(managed);
+        }
+        self.resolve_workflow_working_dir(&task.workflow_id).await
+    }
+
     async fn resolve_workflow_working_dir(&self, workflow_id: &str) -> Result<PathBuf> {
         let workflow = models::Workflow::find_by_id(&self.db.pool, workflow_id)
             .await?
@@ -681,6 +706,20 @@ impl RuntimeActionService {
             .map(|_| ())
             .map_err(|e| anyhow!("Failed to publish terminal status: {e}"))
     }
+}
+
+/// Managed worktree for `branch` under `base`, if it is actually on disk.
+///
+/// Returns `None` for a blank branch (no-worktree workflows leave it empty) and
+/// for a branch whose worktree has not been created or has been cleaned up, so
+/// the caller falls back to the project working directory.
+fn managed_worktree_dir(base: &std::path::Path, branch: &str) -> Option<PathBuf> {
+    let branch = branch.trim();
+    if branch.is_empty() {
+        return None;
+    }
+    let managed = base.join(branch);
+    managed.exists().then_some(managed)
 }
 
 fn normalize_runtime_config_hint(value: &str) -> String {
@@ -754,6 +793,31 @@ mod tests {
         assert!(cli_hint_matches("Claude Code", &claude));
         assert!(cli_hint_matches("openai-codex", &codex));
         assert!(cli_hint_matches("cli-codex", &codex));
+    }
+
+    #[test]
+    fn managed_worktree_dir_prefers_existing_worktree() {
+        let base = tempfile::tempdir().unwrap();
+        let branch = "solodawn/task-1";
+        let worktree = base.path().join(branch);
+        std::fs::create_dir_all(&worktree).unwrap();
+
+        assert_eq!(
+            managed_worktree_dir(base.path(), branch),
+            Some(worktree),
+            "an existing worktree must win over the shared repo root"
+        );
+    }
+
+    #[test]
+    fn managed_worktree_dir_falls_back_when_absent_or_blank() {
+        let base = tempfile::tempdir().unwrap();
+
+        // No-worktree workflows leave the branch empty.
+        assert_eq!(managed_worktree_dir(base.path(), ""), None);
+        assert_eq!(managed_worktree_dir(base.path(), "   "), None);
+        // Branch set, but the worktree was never created or has been cleaned up.
+        assert_eq!(managed_worktree_dir(base.path(), "solodawn/gone"), None);
     }
 
     #[test]
