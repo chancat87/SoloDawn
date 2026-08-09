@@ -33,7 +33,30 @@
 |---|---|---|
 | 每日安全巡检 | `crontab: 37 8 * * *`（CNB 云原生构建调度，Asia/Shanghai） | `main` 分支 |
 | 安全修复 PR 验证 | `api_trigger_security_verify`（由巡检 Agent 在创建 PR 后调用 `cnb build start-build` 触发） | `auto/security-fix-*` 分支 |
+| 审计日志 PR 自动合并 | `pull_request`（目标分支 main） | `auto/security-triage-*` 分支 |
 | GitHub ↔ CNB 同步 | 原有 `push` / `crontab: */5 * * * *`（保持不变） | `main` 分支 |
+
+### 审计日志 PR 为什么要单开一条通道
+
+巡检有两类产出。判定为**真实漏洞**时走 `auto/security-fix-*`，由验证流水线做
+构建/静态检查/安全审计 + AI 独立审核，条件全满足才自动合并。判定为**误报或无新
+告警**时，它只往 `.security/triage-log.json` 追加一段结论、开一个 docs PR ——
+而那条路径上原本没挂任何流水线，PR 就一直悬着等人点。巡检每天都跑，等于每天早上
+多一个「只加了一段日志」的 PR 要人处理，纯噪音，还会把人训练成闭眼点合并。
+
+现由 `main.pull_request` 流水线跑 `scripts/security/auto-merge-triage-log.mjs`
+自动处理，守卫四条全过才合并，任何一条不满足或任何一步拿不准都**不合并**、原样
+留给人工（fail-closed）：
+
+1. 源分支必须是 `auto/security-triage-*`（修复类分支落不到这里）；
+2. PR 恰好只改 1 个文件；
+3. 该文件完整路径必须精确等于 `.security/triage-log.json`；
+4. 该文件在 PR 头部仍是合法 JSON 且 `schema` 没被换掉。
+
+> 坑：CNB `pulls/{n}/files` 接口返回的 `filename` **只有文件名**（basename），
+> 完整仓库路径只出现在 `contents_url` 里。按 `filename` 判定会放行仓库任意目录下
+> 的同名 `triage-log.json`，所以路径必须从 `contents_url` 解析。守卫逻辑有单测：
+> `node --test scripts/security/tests/auto-merge-triage-log.test.mjs`
 
 ## 三、告警验证原则（防误报）
 

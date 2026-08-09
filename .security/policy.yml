@@ -146,6 +146,26 @@ auto_merge:
     任何一项存在不确定性时，只创建/保留 PR 等待人工审核，不自动合并。
   auto_cleanup_branches: true   # 合并后自动删除源分支，仓库只保留 main
 
+  # 审计日志专用通道（与上面的修复 PR 自动合并是两回事）
+  #
+  # 巡检判定「误报 / 无新告警」时只写 triage-log 并开 docs PR，这类 PR 原本没挂
+  # 任何流水线，只能等人点合并；巡检每天都跑，等于每天多一个纯噪音 PR。现由
+  # .cnb.yml 的 main.pull_request 流水线自动合并，守卫见下，一律 fail-closed。
+  triage_log_only:
+    enabled: true
+    branch_prefix: auto/security-triage-
+    script: scripts/security/auto-merge-triage-log.mjs
+    guards:                       # 四条全部通过才合并，任一不满足 → 留给人工
+      - 源分支前缀必须是 auto/security-triage-（修复类分支走上面那条带 AI 审核的线）
+      - PR 恰好只改 1 个文件
+      - 该文件完整路径必须精确等于 .security/triage-log.json
+      - 该文件在 PR 头部仍是合法 JSON 且 schema 未被换掉
+    note: >
+      CNB 的 pulls/{n}/files 接口里 filename 只有文件名（basename），完整仓库路径
+      只在 contents_url 里。路径判定必须从 contents_url 解析，否则仓库任意目录下的
+      同名 triage-log.json 都会被放行。守卫逻辑有单测：
+      node --test scripts/security/tests/auto-merge-triage-log.test.mjs
+
 # 安全边界（对 AI Agent 的硬性约束）
 security_boundaries:
   - 禁止读取、打印或提交 Token / API Key / Cookie / 密码等密钥

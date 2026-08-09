@@ -161,6 +161,28 @@ main:
             branch: main
             force: false
 
+  # =========================================================================
+  # 【新增】只改审计日志的巡检 PR 自动合并
+  #
+  # 巡检 Agent 判定「误报 / 无新告警」时只写 .security/triage-log.json 并开一个
+  # docs PR，而那条路径上原本没挂任何流水线 —— 修复类 PR 有 AI 审核 + 自动合并，
+  # 日志类 PR 却只能等人点。巡检每天都跑，等于每天多一个纯噪音 PR。
+  #
+  # 守卫全在脚本里，且一律 fail-closed（拿不准就不合并、留给人工）：
+  #   源分支必须 auto/security-triage-* → 恰好改 1 个文件 → 路径必须精确等于
+  #   .security/triage-log.json → 内容仍是合法 JSON 且 schema 未被换掉。
+  # 修复类分支 auto/security-fix-* 不会落到这里，它走带 AI 独立审核的那条线。
+  # 守卫逻辑有单测：node --test scripts/security/tests/auto-merge-triage-log.test.mjs
+  # =========================================================================
+  pull_request:
+    - name: Auto-merge triage-log-only patrol PR
+      runner:
+        cpus: 2
+      stages:
+        - name: Auto-merge when the PR only appends to the triage log
+          image: node:22-bookworm-slim
+          script: node scripts/security/auto-merge-triage-log.mjs
+
   # GitHub → CNB
   # 每 5 分钟由 CNB 主动拉取一次 GitHub（既有流程，保持不变）
   "crontab: */5 * * * *":
@@ -288,6 +310,10 @@ main:
                  - 不要修改业务代码；
                  - 将结论写入 .security/triage-log.json（含告警 id、误报原因、判断依据、日期）；
                  - 通过独立小 PR（docs 类型，base=main）提交 triage-log 更新（若无法直接推送 main 则建 PR）。
+                 - 分支名必须用 auto/security-triage-<4位随机>，且该 PR **只能改**
+                   .security/triage-log.json 这一个文件。满足这两条时，main.pull_request
+                   流水线会自动校验并合并、删分支，无需人工介入；一旦夹带了任何其他文件，
+                   守卫会拒绝自动合并并把 PR 留给人工。所以不要把日志更新和别的改动混在一个 PR 里。
               B. 确认真实漏洞：
                  - 按 cnb-code-commit skill 流程：创建独立分支 auto/security-fix-<关键词>-<4位随机>，
                    做最小化修复（不改变无关功能/接口/架构），提交并推送；
