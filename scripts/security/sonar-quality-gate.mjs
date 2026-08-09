@@ -153,18 +153,35 @@ async function revert() {
   });
 }
 
+// Free 套餐禁止自定义门禁（qualitygates/select 返回 403
+// "Organization ... is not allowed to modify Quality gates"），但 create /
+// create_condition 却是放行的 —— 于是会残留一个建好却没人用的门禁。cleanup
+// 用来把它删掉，不留垃圾在别人的组织里。
+async function cleanup() {
+  const gate = await gateByName(CUSTOM_GATE);
+  if (!gate) {
+    console.log(`==> 没有「${CUSTOM_GATE}」，无需清理`);
+    return;
+  }
+  console.log(`==> 删除残留门禁「${CUSTOM_GATE}」（id=${gate.id}）`);
+  await api('POST', 'qualitygates/destroy', { organization: ORG, id: String(gate.id) });
+}
+
 const action = process.argv[2];
-const run = { apply, revert }[action];
+const run = { apply, revert, cleanup }[action];
 if (!run) {
-  console.error('用法: node scripts/security/sonar-quality-gate.mjs <apply|revert>');
+  console.error('用法: node scripts/security/sonar-quality-gate.mjs <apply|revert|cleanup>');
   process.exit(1);
 }
 
 console.log(`==> 当前门禁：${await currentGate()}`);
 await run();
-console.log(`==> 变更后门禁：${await currentGate()}`);
-const finalGate = await gateByName(await currentGate());
-console.log('==> 生效条件：');
-for (const c of (await showGate(finalGate.id)).conditions || []) {
-  console.log(`    ${c.metric} ${c.op} ${c.error}`);
+const after = await currentGate();
+console.log(`==> 变更后门禁：${after}`);
+const finalGate = await gateByName(after);
+if (finalGate) {
+  console.log('==> 生效条件：');
+  for (const c of (await showGate(finalGate.id)).conditions || []) {
+    console.log(`    ${c.metric} ${c.op} ${c.error}`);
+  }
 }

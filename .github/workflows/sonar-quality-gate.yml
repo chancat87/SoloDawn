@@ -27,6 +27,7 @@ on:
         options:
           - apply
           - revert
+          - cleanup
 
 permissions:
   contents: read
