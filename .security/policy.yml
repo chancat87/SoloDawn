@@ -166,6 +166,29 @@ auto_merge:
       同名 triage-log.json 都会被放行。守卫逻辑有单测：
       node --test scripts/security/tests/auto-merge-triage-log.test.mjs
 
+# 已知结构性红灯（不是可修复告警，巡检不得反复尝试）
+known_structural_failures:
+  - check: "GitHub check-run: SonarCloud Code Analysis"
+    reason: >
+      质量门禁 Sonar way 含 new_coverage >= 80%，而本仓库不产出也不上报覆盖率
+      （Rust 侧无覆盖率工具；前端 vitest 未装 @vitest/coverage-v8、不输出 lcov），
+      该项恒为 0 故门禁恒红。门禁其余五项（安全/可靠性/可维护性评级、重复率、
+      安全热点复核率）当前全部通过。
+    why_not_fixable_in_repo: >
+      去掉该条件需要自定义质量门禁，而自定义门禁是 Team/Enterprise 套餐功能，
+      本组织为 Free 套餐：qualitygates/create 与 create_condition 会返回 200，
+      但 qualitygates/select 返回 403 "not allowed to modify Quality gates"。
+      2026-08-09 已实测并清理残留门禁，勿再尝试。
+    agent_must:
+      - 不得为它创建修复 PR
+      - 不得计入 attempts
+      - 不得因它反复标记 needs_human
+      - 判断 github_ci_state 时将其排除；其余 check 全绿即视为 CI 正常
+      - 在巡检总结里一句话带过即可
+    real_options_need_human:
+      - 建覆盖率流水线（Rust cargo-llvm-cov + 前端 lcov），建成后新代码覆盖率仍需 ≥80%
+      - 升级到 Team 套餐后改用自定义门禁
+
 # 安全边界（对 AI Agent 的硬性约束）
 security_boundaries:
   - 禁止读取、打印或提交 Token / API Key / Cookie / 密码等密钥

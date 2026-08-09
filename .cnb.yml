@@ -336,6 +336,15 @@ main:
                   按最小修改原则创建修复 PR（走 B 流程），确保 GitHub 侧也全绿。
                 * 若 github_ci 为空或不可达：记录为"无法读取 GitHub CI，待下轮复核"，不阻塞告警处置。
 
+              【已知结构性红灯，直接跳过】
+              GitHub check-run「SonarCloud Code Analysis」恒为 failure，原因是质量门禁
+              Sonar way 含 new_coverage>=80% 而本仓库不上报覆盖率；去掉该条件需要自定义
+              门禁，那是 Team/Enterprise 套餐功能，本组织是 Free 套餐（2026-08-09 已实测：
+              create 返回 200 但 select 返回 403）。这不是可修复告警：
+              **不要为它提 PR、不要计入 attempts、不要反复标 needs_human**，
+              判断 github_ci_state 时把它排除，其余 check 全绿即视为 CI 正常，
+              总结里一句话带过。详见 .security/policy.yml → known_structural_failures。
+
               【止损：同一问题最多尝试 3 轮】
               修 GitHub CI 之前，先读 .security/triage-log.json 里该问题的 attempts 计数：
                 - attempts >= 3：**停止再尝试**，不要再提任何修复 PR。把问题标记为
