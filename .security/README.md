@@ -12,19 +12,28 @@
    ├─ 1. collect-alerts.sh       采集 CNB「安全」能力与当前仓库可获取的告警
    │                              → .security/alerts.json（构建期产物，不入库）
    │
-   ├─ 2. npc:go（AI 巡检 Agent）  逐条结合源码/调用路径/配置验证告警
+   ├─ 2. codebuddy-dispatch.mjs   判断有没有活：零告警 + CI 全绿 + 两端 main 同步
+   │                              → 直接结束，不派单、不花一分 AI 额度
+   │                              有活 → 建 Issue（work_mode=true，正文 @CodeBuddy，
+   │                              并把 alerts/github-status 内嵌进正文）
+   │
+   ├─ 3. @CodeBuddy（CNB NPC 事件，在另一条流水线里执行）
    │     ├─ 误报/测试代码/示例/本地用途 → 记录到 .security/triage-log.json
    │     │                              （纯审计日志，独立 PR 更新，不碰业务代码）
-   │     └─ 确认真实漏洞 → 创建独立分支 auto/security-fix-*，最小化修复
-   │                       → 创建独立 PR（含告警/可利用性/根因/修改/影响/验证说明）
-   │                       → 触发 api_trigger_security_verify 验证流水线
+   │     ├─ 确认真实漏洞 → 创建独立分支 auto/security-fix-*，最小化修复
+   │     │                 → 创建独立 PR（含告警/可利用性/根因/修改/影响/验证说明）
+   │     │                 → 触发 api_trigger_security_verify 验证流水线
+   │     └─ 收尾 → 在 Issue 下留中文总结，并**自己关闭该 Issue**
+   │              （不关的话，第二天巡检会因为「已有未关闭巡检 Issue」而不再派单）
    │
-   └─ 3.（验证流水线 auto/security-fix-*，api_trigger_security_verify）重新独立审核 PR 变更
+   └─ 4.（验证流水线 auto/security-fix-*，api_trigger_security_verify）
           → 运行仓库现有构建/静态检查/安全检查与相关测试（verify-fix.sh，完整 Rust+前端工具链镜像）
           → 读取 PR CI 状态（pr_ci_state 必须 success）
-          → npc:go 二次独立审核 → 输出 .security/auto-merge-decision.json
-          → 仅当 AUTO_MERGE_ENABLED=true 且全部自动合并条件满足时执行合并；
-            默认关闭，任何不确定性都保留 PR 等待人工审核
+          → 在 PR 上留一条 @CodeBuddy 评论做二次独立审核，验证结果内嵌在评论正文里
+          → 结论直接写成 PR 评论（不再落 auto-merge-decision.json：CodeBuddy 在另一条
+            流水线里跑，写不进本次构建的工作区）
+          → 仅当 AUTO_MERGE_ENABLED=true 且全部自动合并条件满足时执行合并并删分支；
+            任何不确定性都保留 PR 等待人工审核
 ```
 
 ## 二、触发方式
@@ -32,7 +41,8 @@
 | 流水线 | 触发 | 配置位置 |
 |---|---|---|
 | 每日安全巡检 | `crontab: 37 8 * * *`（CNB 云原生构建调度，Asia/Shanghai） | `main` 分支 |
-| 安全修复 PR 验证 | `api_trigger_security_verify`（由巡检 Agent 在创建 PR 后调用 `cnb build start-build` 触发） | `auto/security-fix-*` 分支 |
+| 安全修复 PR 验证 | `api_trigger_security_verify`（由 @CodeBuddy 在创建 PR 后调用 `cnb build start-build` 触发） | `auto/security-fix-*` 分支 |
+| AI 处置（@CodeBuddy） | `issue.comment@npc` / `pull_request.comment@npc`（由上面两条流水线派单触发） | 平台内置 NPC 事件 |
 | 审计日志 PR 自动合并 | `pull_request`（目标分支 main） | `auto/security-triage-*` 分支 |
 | GitHub ↔ CNB 同步 | 原有 `push` / `crontab: */5 * * * *`（保持不变） | `main` 分支 |
 

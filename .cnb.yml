@@ -6,13 +6,16 @@
 #
 #   1) main 分支每日一次（crontab: 37 8 * * *，CNB 按 Asia/Shanghai 解析）执行安全巡检：
 #      - collect-alerts.sh 采集 CNB「安全」能力与当前仓库可获取的安全告警；
-#      - npc:go AI 巡检 Agent 结合源码逐条验证告警（防止仅凭扫描器/关键词误判），
-#        误报记录到 .security/triage-log.json；真实漏洞创建独立分支+独立 PR，
-#        并触发下方验证流水线。
+#      - codebuddy-dispatch.mjs 判断有没有活；有活才建一个带 work_mode 的 Issue 并
+#        @CodeBuddy，由它逐条结合源码验证告警、写 triage-log 或开修复 PR，干完自己关 Issue。
 #   2) auto/security-fix-* 分支的 api_trigger_security_verify 事件执行修复验证：
 #      - 运行与修改相关的构建/静态检查/安全审计（verify-fix.sh）；
-#      - npc:go 独立复核 PR 变更（安全回归/功能回归/过度修改）；
+#      - 在 PR 上留一条 @CodeBuddy 评论，由它独立复核变更并决定合并 / 等人工 / 拒绝；
 #      - 仅当 AUTO_MERGE_ENABLED=true 且全部自动合并条件满足时才合并，否则保留人工审核。
+#
+# AI 为什么走 @CodeBuddy 而不是流水线内置的 npc:go：npc:go 在本流水线里跑，吃的是
+# 自建 AI 额度；改成建 Issue / 发评论 @CodeBuddy 后，走的是 CNB 的 NPC 事件口径。
+# 附带好处是「没活就不派单」变得可能 —— npc:go 写在 stages 里就是每天必然执行一次。
 #
 # 安全边界：本配置不导入任何密钥仓库（巡检只使用内置 CNB_TOKEN），
 # 不触碰 solodawn-secrets；禁止 force push、禁止改写历史。
@@ -46,99 +49,17 @@
         set -u
         bash scripts/security/collect-alerts.sh
         bash scripts/security/verify-fix.sh
-    - name: AI independent security review
-      type: npc:go
-      options:
-        maxTurns: 40
-        systemPrompt: |
-          你是 SoloDawn 仓库安全修复 PR 的独立代码审核 Agent。
-          必须遵守仓库根目录 .security/policy.yml 中的全部策略，尤其是：
-          - 禁止读取、打印或提交任何 Token / API Key / Cookie / 密码等密钥；
-          - 禁止修改 CNB/GitHub 密钥仓库（solodawn-secrets）中的凭证；
-          - 禁止执行与当前仓库安全修复无关的外部操作；
-          - 禁止 force push main、禁止修改或删除既有提交历史。
-          你只对当前安全修复 PR 做最小范围复核，不做任何无关修改。
-
-          【自我约束红线】以下文件构成对你自身的管控，你无权为了让流程通过而放宽它们。
-          若被审 PR 改动了这些文件中的门禁项，一律判定 decision="wait_for_human"：
-          - .cnb.yml 的 AUTO_MERGE_ENABLED 及任何自动合并判定逻辑；
-          - .security/policy.yml（尤其 auto_merge 与 suppression 段）；
-          - sonar-project.properties 中新增的 sonar.exclusions 源文件条目。
-        userPrompt: |
-          请对当前安全修复变更执行一次"独立"代码审核（区别于创建该 PR 的巡检 Agent）。
-
-          背景与输入：
-          - 策略文件：.security/policy.yml（必须读取并严格遵守）
-          - 告警采集结果：.security/alerts.json
-          - 验证结果：.security/verify-results.json（构建期生成，已在本工作区）
-          - 当前分支：${CNB_BRANCH}
-          - 若环境变量 PR_NUMBER 存在，则为该 PR；否则用 cnb pulls list-pulls 查找
-            当前分支对应的 open PR。
-
-          步骤：
-          1. 用 cnb 命令获取该 PR 的详情与变更文件（cnb pulls get、cnb pulls get-pr-files），
-             并结合告警详情（.security/alerts.json）核对修复是否针对原始告警。
-          2. 逐文件检查变更，重点：
-             - 安全回归：是否引入新的命令注入/路径穿越/权限绕过/硬编码密钥/敏感泄露等；
-             - 功能回归：是否改变无关功能、接口行为或项目架构；
-             - 过度修改：是否超出最小修复范围、删除正常功能、关闭安全检查、
-               扩大白名单或降低安全标准。
-          3. 读取 .security/verify-results.json：
-             - 仅以 gate=hard 的硬性检查作为自动合并门禁（cargo_check / cargo_clippy /
-               frontend_lint / frontend_tests / backend_tests / security_audit / frontend_install 等）；
-               任一硬性检查 failed，则不得判定为"可自动合并"；
-             - gate=advisory 的检查（如 cargo_fmt，main 基线本身未全绿且 GitHub CI 不跑 fmt）
-               仅供参考记录，不作为自动合并阻断条件；
-             - 若存在 skipped 的硬性检查，视为"存在不确定性"，不得自动合并；
-             - pr_ci_state 必须为 success；否则不得自动合并；
-             - **github_ci_state 必须为 success**；为 failure 或 pending 时一律不得自动合并。
-               这一条对应 issue #5 第 7 条的「安全检查通过」：SonarCloud 的 Quality Gate
-               是 GitHub 侧的 check-run，pr_ci_state（只看 CNB 流水线）看不到它。
-               github_ci_failed_checks 里列出的失败项必须在结论里逐条写明。
-          4. 将审核结论写入 .security/auto-merge-decision.json，格式：
-             {
-               "pr": <PR编号>, "branch": <当前分支>,
-               "vulnerability_confirmed": true/false,
-               "fix_scope_clear_low_risk": true/false,
-               "all_tests_passed": true/false,
-               "build_passed": true/false,
-               "static_checks_passed": true/false,
-               "security_checks_passed": true/false,
-               "self_review_no_high_risk": true/false,
-               "no_manual_judgement_needed": true/false,
-               "all_conditions_met": true/false,
-               "auto_merge_enabled": <环境变量 AUTO_MERGE_ENABLED 是否为 true>,
-               "github_ci_state": <verify-results.json 中的 github_ci_state 原值>,
-               "touches_governance_files": true/false,
-               "decision": "auto_merge" | "wait_for_human" | "reject",
-               "reason": "<判断依据>"
-             }
-             注意：security_checks_passed 必须同时反映本地 security_audit 与
-             github_ci_state；只要 GitHub 侧安全门禁是红的，它就必须为 false。
-          5. 合并判定（仅当以下全部满足才调用 cnb pulls merge-pull 执行自动合并）：
-             - AUTO_MERGE_ENABLED 环境变量为 "true"；
-             - vulnerability_confirmed=true 且 fix_scope_clear_low_risk=true；
-             - verify-results.json 中全部硬性检查 passed 且无 skipped；
-             - verify-results.json 中 pr_ci_state == "success"；
-             - verify-results.json 中 github_ci_state == "success"；
-             - touches_governance_files=false（未改动上述自我约束红线中的文件）；
-             - 你本次独立审核未发现新的高风险问题；
-             - 无需要人工判断的架构/权限/兼容性变化。
-             任何一项不满足或存在不确定性 → 只保留 PR 等待人工审核，绝不自动合并。
-          6. 合并后执行分支清理（仅当本次确实自动合并成功）：
-             - 用 cnb git delete-branch 删除本次修复分支 <当前分支>（源分支）；
-             - 用 cnb pulls list-pulls --state all 检查其他已合并/已关闭 PR 的源分支，
-               对不再需要的（已合并或已关闭）分支逐一删除，最终仓库只保留 main。
-          7. 在 PR 上留下审核评论（cnb pulls comment），说明审核结论与合并决策。
-          8. 最后用一段简洁中文总结：PR 编号、审核结论、是否自动合并、分支清理情况、理由。
-    - name: Persist auto-merge decision (best effort)
-      allowFailure: true
+    # 复核不再用 npc:go 在本流水线里跑，改为在 PR 上留一条 @CodeBuddy 评论，
+    # 由 CNB 的 pull_request.comment@npc 事件把 CodeBuddy 拉起来做独立复核。
+    # 关键副作用：CodeBuddy 在**另一条**流水线里从零克隆仓库，看不到本次构建生成的
+    # .security/verify-results.json，所以派单脚本会把验证结果内嵌进评论正文一起送过去。
+    # 原「Persist auto-merge decision」阶段同理已删除 —— 那份 decision json 以前由
+    # npc:go 写在同一个工作区，现在 CodeBuddy 不在这个工作区里，读不到也写不进来；
+    # 复核结论改为直接写成 PR 评论，人和机器都看得见，不再落临时文件。
+    - name: Ask @CodeBuddy to review this PR
       script: |
-        mkdir -p .security
-        if [ -f .security/auto-merge-decision.json ]; then
-          echo "auto-merge decision recorded"
-          cat .security/auto-merge-decision.json
-        fi
+        set -u
+        node scripts/security/codebuddy-dispatch.mjs review
 
 # ---------------------------------------------------------------------------
 # main 分支
@@ -258,113 +179,14 @@ main:
             mkdir -p .security
             echo "{\"checked_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\", \"cnb_main_sha\": \"${CNB_BRANCH_SHA:-unknown}\", \"github_main_sha\": \"${GH_SHA}\", \"github_ci\": $(echo "${GH_CI}" | jq -c . 2>/dev/null || echo "{}")}" > .security/github-status.json
             echo "github-status.json written"
-        - name: AI triage & fix
-          type: npc:go
-          options:
-            maxTurns: 80
-            systemPrompt: |
-              你是 SoloDawn 仓库的自动化安全巡检 Agent，运行在 CNB 云原生构建流水线中。
-
-              必须遵守 .security/policy.yml 的全部策略，核心红线：
-              - 禁止读取、打印或提交任何 Token / API Key / Cookie / 密码等密钥；
-              - 禁止修改 CNB/GitHub 密钥仓库（solodawn-secrets）中的凭证；
-              - 禁止执行与当前仓库安全修复无关的外部操作；
-              - 禁止 force push main、禁止修改或删除既有提交历史；
-              - 禁止删除正常功能、关闭安全检查、扩大白名单或降低安全标准来规避告警；
-              - 禁止把 admin / password / token / localhost / test 等关键词一概判定为漏洞
-                或一概加入忽略列表。
-
-              【自我约束红线】以下文件是对你自身的管控，你无权为了让流程通过而放宽它们，
-              一律禁止修改（需要调整时只能记录到巡检总结，交人工处理）：
-              - .cnb.yml 中的 AUTO_MERGE_ENABLED 与任何自动合并判定逻辑；
-              - .security/policy.yml，尤其 auto_merge 与 suppression 两段；
-              - sonar-project.properties 的 sonar.exclusions —— 只能排除构建产物与依赖目录，
-                禁止把源文件加进去。文件级排除会关闭该文件上的全部规则，属于
-                policy.yml → suppression.forbidden 明令禁止的「大范围关闭扫描规则」。
-                确需抑制单条规则时，用 sonar.issue.ignore.multicriteria 精确到
-                「规则 × 文件」，并在注释里写明理由与根因是否已修复。
-
-              你有 Shell 与 git 权限，可调用 cnb 命令（issues / pulls / build / repo-code-issue 等），
-              可加载本镜像内置的 cnb-api、cnb-code-commit、cnb-pipeline、cnb-code-review、
-              cnb-pr-diff 等 skill 并按其规范执行。
-            userPrompt: |
-              请对当前仓库执行一次安全告警巡检与处置。当前分支为 ${CNB_BRANCH}，仓库 ${CNB_REPO_SLUG}。
-
-              【输入】
-              1. 告警快照：.security/alerts.json（CNB 安全能力采集结果，含 rule / 风险等级 / 文件 / 行号 / 描述 / 详情链接）
-              2. 概览：.security/alerts-summary.json
-              3. 既有判定记录：.security/triage-log.json（已处理过的告警直接复用结论，避免重复建 PR）
-              4. 策略：.security/policy.yml 与 .security/README.md（必须读取）
-              5. 仓库本地安全审计：可运行 bash scripts/audit-security.sh 作为补充
-              6. GitHub 同步/CI 状态快照：.security/github-status.json（含 CNB↔GitHub main sha 对比与 GitHub 侧 check-runs 状态）
-
-              【验证规则】（最重要，逐条执行）
-              - 不要因为扫描器标记"高危"就直接认定为真实漏洞；
-              - 不要仅依赖关键词（admin / password / token / localhost / test 等）判断；
-              - 对每条新告警，结合实际源码、调用路径、数据流、配置与可利用条件确认。
-                例如：依赖漏洞需检查 Cargo.lock / pnpm-lock.yaml 与上游 advisory 的 fixed 版本、
-                实际依赖链与受影响代码路径；敏感信息告警需区分测试夹具/占位符/示例/文档与真实密钥。
-
-              【处置】
-              A. 判定为误报 / 测试代码 / 示例配置 / 本地开发用途 / 无真实安全影响：
-                 - 不要修改业务代码；
-                 - 将结论写入 .security/triage-log.json（含告警 id、误报原因、判断依据、日期）；
-                 - 通过独立小 PR（docs 类型，base=main）提交 triage-log 更新（若无法直接推送 main 则建 PR）。
-                 - 分支名必须用 auto/security-triage-<4位随机>，且该 PR **只能改**
-                   .security/triage-log.json 这一个文件。满足这两条时，main.pull_request
-                   流水线会自动校验并合并、删分支，无需人工介入；一旦夹带了任何其他文件，
-                   守卫会拒绝自动合并并把 PR 留给人工。所以不要把日志更新和别的改动混在一个 PR 里。
-              B. 确认真实漏洞：
-                 - 按 cnb-code-commit skill 流程：创建独立分支 auto/security-fix-<关键词>-<4位随机>，
-                   做最小化修复（不改变无关功能/接口/架构），提交并推送；
-                 - 创建独立 PR（base=main），PR 中必须包含：
-                   原始告警；是否确认可利用；根因；修改内容；影响范围；测试和验证结果；
-                 - PR 创建后，触发验证流水线（必须执行，不可跳过）：
-                   cnb build start-build --repo ${CNB_REPO_SLUG} --branch <修复分支> \
-                     --event api_trigger_security_verify \
-                     --env PR_NUMBER=<PR编号> --title "security verify for PR <编号>"
-                 - 验证流水线在满足全部自动合并条件时会自动合并并清理分支，无需人工。
-              C. 依赖漏洞等需要升级主版本/涉及架构或兼容性变化的修复：只创建 PR 并明确标注
-                 "需人工判断"，不自动合并。
-
-              【GitHub 同步/CI 状态检查】（新增，对照 github.com/huanchong-99/SoloDawn/commits/main）
-              - 读取 .security/github-status.json：
-                * 若 cnb_main_sha != github_main_sha：说明 CNB↔GitHub 同步存在延迟/失败，
-                  不要急于在本轮内再叠加修复；等待下轮巡检自动同步后再复核。
-                * 若 github_ci 存在 failed 或 pending 的 check-run：将问题记录到巡检总结，
-                  若属于仓库代码/配置可修复项（如 SonarCloud 质量门禁、静态检查失败），
-                  按最小修改原则创建修复 PR（走 B 流程），确保 GitHub 侧也全绿。
-                * 若 github_ci 为空或不可达：记录为"无法读取 GitHub CI，待下轮复核"，不阻塞告警处置。
-
-              【关于 SonarCloud 的一条更正】
-              曾有一版提示词让你忽略「SonarCloud Code Analysis」的红灯（当时它因
-              new_coverage 恒为 0 而永远失败）。那条已作废：根因已在
-              sonar-project.properties 里用 sonar.coverage.exclusions 如实声明解决，
-              门禁现已 OK、check 已绿。**从现在起该 check 变红就是真的有问题，
-              必须按真实告警处置，不得忽略。** 另：不要再试图用自定义质量门禁去掉
-              覆盖率条件，那是 Team/Enterprise 套餐功能，本组织是 Free（已实测 403）。
-              详见 .security/policy.yml → coverage_status。
-
-              【止损：同一问题最多尝试 3 轮】
-              修 GitHub CI 之前，先读 .security/triage-log.json 里该问题的 attempts 计数：
-                - attempts >= 3：**停止再尝试**，不要再提任何修复 PR。把问题标记为
-                  needs_human，在巡检总结里写明「已尝试 N 轮仍未解决 + 每轮做了什么 +
-                  当前判断的真实卡点」，交人工处理；
-                - 否则：本轮尝试后把 attempts 加一，并记录本轮的具体做法，
-                  **下一轮禁止重复同一做法**。
-              这条是硬性要求。2026-08-07 曾出现连续 5 次改 sonar-project.properties
-              想压掉同一条告警、每次都无效的空转 —— 根因是失败的 SonarCloud Code Analysis
-              属于 SonarCloud 的 Automatic Analysis，**根本不读 sonar-project.properties**
-              （读它的是 ci-quality.yml 里另一个 SonarQube Analysis 任务，那个一直是绿的）。
-              若同一手段连续两轮无效，必须先怀疑「这个旋钮根本没接线」，
-              去查该检查的真实来源，而不是继续换写法。
-
-              【输出】最后用中文给出简洁总结：
-              - 本次巡检发现的告警总数、逐条判定结果（误报/真实/待定）；
-              - 创建的修复 PR 列表（编号、分支、标题、验证流水线触发情况）；
-              - 误报记录更新情况；
-              - GitHub 同步/CI 状态检查结论；
-              - 需要人工关注的遗留项。
+        # 巡检本身只采集，判断与修复派给 @CodeBuddy：建一个带 work_mode 的 Issue
+        # 并在正文里 @ 它，由 CNB 的 issue.comment@npc 事件把它拉起来干活，干完自己关。
+        # 没活的日子（零告警 + CI 全绿 + 两端 main 同步）直接不派单，零 AI 消耗 ——
+        # 以前是每天雷打不动把 AI 叫醒一次，绝大多数日子纯属浪费额度。
+        - name: Dispatch to @CodeBuddy
+          script: |
+            set -u
+            node scripts/security/codebuddy-dispatch.mjs patrol
 
 # ---------------------------------------------------------------------------
 # 安全修复分支（auto/security-fix-*）

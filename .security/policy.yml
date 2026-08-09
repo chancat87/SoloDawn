@@ -1,8 +1,10 @@
 # ============================================================================
 # SoloDawn CNB 云原生安全巡检与修复策略（Security Patrol Policy）
 #
-# 本文件是自动安全巡检/修复流程的"策略源"，供流水线中的 AI Agent
-# （npc:go）读取并严格遵循。人工评审与修改也以此为准。
+# 本文件是自动安全巡检/修复流程的"策略源"，供承接处置的 AI（@CodeBuddy）
+# 读取并严格遵循。人工评审与修改也以此为准。
+# 注意：@CodeBuddy 在独立的 NPC 事件流水线里执行，读不到派单流水线的构建期产物，
+# 也读不到 .cnb.yml 里的 systemPrompt —— 红线必须同时写在本文件与派单正文里。
 # ============================================================================
 
 # 巡检调度（与 .cnb.yml 中 crontab 保持一致）
@@ -165,6 +167,47 @@ auto_merge:
       只在 contents_url 里。路径判定必须从 contents_url 解析，否则仓库任意目录下的
       同名 triage-log.json 都会被放行。守卫逻辑有单测：
       node --test scripts/security/tests/auto-merge-triage-log.test.mjs
+
+# AI 处置的承接方式与额度口径（2026-08-09 由 npc:go 改为 @CodeBuddy）
+#
+# 原先两处 AI 都是流水线里的 `type: npc:go` 阶段，在当前构建内执行。现改为：
+# 流水线只做采集与验证（纯 shell），然后建 Issue / 在 PR 上留评论并 @CodeBuddy，
+# 由 CNB 的 NPC 事件把它拉起来干活。计费口径因此走 NPC 事件而非自建 npc:go 额度。
+ai_dispatch:
+  mechanism: "CNB NPC 事件（issue.comment@npc / pull_request.comment@npc）"
+  script: scripts/security/codebuddy-dispatch.mjs
+  prompts: scripts/security/codebuddy-prompts.mjs
+  tests: "node --test scripts/security/tests/codebuddy-dispatch.test.mjs"
+  work_mode: >
+    建 Issue（api.PostIssueForm）与发评论（api.PostIssueCommentForm /
+    api.PullCommentCreationForm）都必须带 work_mode: true。不开的话 CodeBuddy 的
+    CNB_TOKEN 以只读为主 —— 它能回话，但推不了代码、改不了 Issue 状态，等于白派。
+  mention_placement: >
+    正文里的 @CodeBuddy 必须是独立的普通段落。CNB 文档明确：引用(blockquote)、
+    代码块、折叠块(details)、有序/无序列表、表格里的 @ 不会触发 NPC 事件。
+    位置写错不会报错，只会建出一个谁也不理的 Issue，巡检从此静默失效 ——
+    所以派单前由 mentionIsSafe() 强制校验，校验不过宁可整条派单失败退出。
+  data_must_be_embedded: >
+    CodeBuddy 在**另一条**流水线里从零克隆仓库，看不到派单流水线的工作区。
+    alerts.json / github-status.json / verify-results.json 都是构建期产物、未入库，
+    因此必须内嵌进 Issue 正文或 PR 评论正文一起送过去，不能只给文件名。
+  no_self_mention: >
+    CodeBuddy 的回复、PR 描述、提交信息里都不得再出现 @CodeBuddy —— 那会重新触发
+    NPC 事件把它自己叫醒，形成循环。派单正文里已写明该约束（放在有序列表内，
+    使这句提醒本身不触发事件）。
+  skip_when_idle: >
+    零告警 + GitHub CI 全绿 + 两端 main 同步 → 不派单，本轮零 AI 消耗。
+    npc:go 写在 stages 里就是每天必然执行一次，绝大多数日子纯属浪费额度；
+    改成派单后「没活就不叫」才成为可能。判定逻辑见 decideWork()，有单测覆盖。
+  dedupe: >
+    已存在带 security-patrol 标签且未关闭的巡检 Issue 时，当天不再新建。
+    因此 CodeBuddy 干完必须自己关闭 Issue（state=closed + state_reason），
+    否则次日巡检会被这条未关闭的 Issue 挡住。
+  quota: >
+    AI Credits 免费额度 500 credits/月（月底清零），超额 0.05 元/credit，
+    覆盖 NPC、云原生开发内置 CodeBuddy、AI 代码评审的 Token 消耗；
+    算力侧「NPC 视作开发场景，消耗云原生开发用量」，免费 1600 核时/月。
+    用量查询：组织 → 设置 → 用量管理；仓库 → 设置 → 用量统计。
 
 # 覆盖率与质量门禁的现状（2026-08-09 结案，勿再按旧结论行事）
 #

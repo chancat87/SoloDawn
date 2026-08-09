@@ -4,10 +4,13 @@
 #
 # 在安全修复 PR 的验证流水线（api_trigger_security_verify，auto/security-fix-* 分支）中
 # 运行仓库现有的构建、静态检查、安全检查与相关测试，并读取 PR 的 CI 状态，
-# 将结果汇总为 JSON 供 npc:go 独立审核 Agent 判定"是否满足自动合并条件"。
+# 将结果汇总为 JSON 供 @CodeBuddy 独立审核时判定"是否满足自动合并条件"。
 #
 # 输出：
 #   ${RESULTS:-.security/verify-results.json}   验证结果（构建期生成，不入库）
+#
+# 注意：这份结果不会留在 CodeBuddy 的工作区 —— 它在独立的 NPC 事件流水线里从零
+# 克隆仓库。codebuddy-dispatch.mjs 会把本文件内容内嵌进 PR 评论正文一起送过去。
 #
 # 说明：
 #   * 本脚本复刻仓库 GitHub CI（ci-basic.yml）的核心检查命令，保证口径一致；

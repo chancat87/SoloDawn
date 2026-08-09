@@ -115,6 +115,7 @@ test-screenshots/
 .security/alerts.json
 .security/alerts-summary.json
 .security/verify-results.json
+.security/github-status.json
 .security/auto-merge-decision.json
 .security/tmp-*.json
 
