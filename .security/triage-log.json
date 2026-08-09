@@ -1,6 +1,6 @@
 {
   "schema": "solodawn-security-triage-v1",
-  "updated_at": "2026-08-09T09:00:00Z",
+  "updated_at": "2026-08-09T12:00:00Z",
   "entries": {
     "audit:logging-filesystem-410": {
       "alert": "scripts/audit-security.sh 日志安全检查误报：crates/services/src/services/filesystem.rs:410 `tracing::trace!(\"Cancellation token triggered\")`",
@@ -164,6 +164,14 @@
         "review:2026-08-08-20h-sonar-s6471"
       ],
       "date": "2026-08-08"
+    },
+    "review:2026-08-09-ci-analysis-online": {
+      "alert": "CI 侧 SonarCloud 分析首次成功接入后的复核：Rust 首次被扫描，secrets:S6689/S6698 各 1 条 BLOCKER",
+      "verdict": "false_positive",
+      "reason": "2026-08-09 配好 SONAR_TOKEN 并关闭 Automatic Analysis 后，CI scanner 首次成功上传分析。语言分布由 ts=75654（无 Rust）变为 rust=133561;ts=75453，总行数 86810 → 209014 —— 证实此前Automatic Analysis 从未扫描过本仓库主体（Rust 不在其支持语言内）。首次扫描 Rust 后新增 2 条 BLOCKER 漏洞，均落在 crates/quality/src/rules/common/secret_detection.rs 的 #[test] 函数内：line 259 的 ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkl（GitHub 官方文档示例值形状）与 line 398 的 postgres://admin:s3cretPass@localhost:5432/mydb（本地伪造 URL）。该文件正是密钥检测规则自身的实现与单测，示例密钥是验证检测逻辑的必需夹具，非真实凭据，不存在可撤销的对象。判定与既有 audit:secret-test-fixtures 一致。",
+      "basis": "sonarcloud api/measures/component 实查 ncloc_language_distribution 前后对比；api/issues/search types=VULNERABILITY 实查 total=2，两条均 rule=secrets:S6689/S6698、severity=BLOCKER、component=crates/quality/src/rules/common/secret_detection.rs:259/398；源码实查两处均位于 #[test] 函数体内，字符串为文档化占位值。",
+      "action": "在 sonar-project.properties 增加 e3a/e3b 两条 multicriteria，精确到「规则 × 单个文件」，该文件其余规则保持生效；不使用 sonar.exclusions（文件级排除为策略明令禁止）。注意质量门禁当前的失败项已不再是安全评级 —— new_security_rating 已由 CI 分析判为 A，唯一 ERROR 变为 new_coverage=0.0（阈值 80），即新代码覆盖率未上报，属另一独立议题。",
+      "date": "2026-08-09"
     }
   }
 }
