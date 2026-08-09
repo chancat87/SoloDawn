@@ -22,7 +22,10 @@ jobs:
   sonar-analysis:
     name: SonarQube Analysis
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 45 rather than 30: once CI analysis is switched on this job also runs
+    # `cargo clippy` over the whole workspace for the Rust analyzer, and the
+    # first run has a cold sccache.
+    timeout-minutes: 45
 
     steps:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -56,10 +59,30 @@ jobs:
             echo "To enable CI analysis: create a SonarCloud user token, add it as the \`SONAR_TOKEN\`"
             echo "repository secret, then turn off Automatic Analysis in the SonarCloud project"
             echo "settings (the two modes are mutually exclusive)."
+            echo
+            echo "Note that Automatic Analysis **cannot analyze Rust at all**, so the bulk of this"
+            echo "repository is currently unscanned. Switching to CI analysis is what gets it covered."
           } >> "$GITHUB_STEP_SUMMARY"
         else
           echo "configured=true" >> "$GITHUB_OUTPUT"
         fi
+
+    # Rust is the bulk of this repo, and Sonar's Rust analyzer works by running
+    # `cargo clippy` on the analysis machine — so the scanner needs a toolchain
+    # or it produces zero Rust findings. (Automatic Analysis cannot analyze Rust
+    # at all: the docs list Rust, Objective-C and Dart as unsupported there,
+    # which is why every issue SonarCloud has ever raised on this project is
+    # docker/typescript/shell.) Gated on the same secret, so this costs nothing
+    # until CI analysis is actually switched on.
+    - name: Setup Rust environment
+      if: steps.sonar_creds.outputs.configured == 'true'
+      uses: ./.github/actions/setup-rust
+      with:
+        components: clippy
+
+    - name: Setup sccache
+      if: steps.sonar_creds.outputs.configured == 'true'
+      uses: ./.github/actions/setup-sccache
 
     - name: SonarScan
       if: steps.sonar_creds.outputs.configured == 'true'
