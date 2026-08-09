@@ -44,6 +44,8 @@ if (!token) {
   process.exit(1);
 }
 
+// 参数名实查自 api/webservices/list：create_condition 与 select 都要 gateId
+// （不是 gateName），第一次按名字传直接 400。
 async function api(method, path, params) {
   const url = new URL(`${API}/${path}`);
   const init = {
@@ -79,39 +81,74 @@ async function currentGate() {
   return d.qualityGate?.name;
 }
 
-async function apply() {
-  const existing = (await listGates()).find((g) => g.name === CUSTOM_GATE);
+async function gateByName(name) {
+  return (await listGates()).find((g) => g.name === name);
+}
 
-  if (!existing) {
+async function showGate(id) {
+  return api('GET', 'qualitygates/show', { organization: ORG, id: String(id) });
+}
+
+const sameCondition = (a, b) =>
+  a.metric === b.metric && String(a.op) === String(b.op) && String(a.error) === String(b.error);
+
+/**
+ * 把门禁的条件对齐到 CONDITIONS —— 缺的补上，多的删掉。
+ * 写成"对账"而不是"一次性创建"，是因为创建门禁和写入条件是分开的两次调用：
+ * 中途失败会留下一个空门禁，只判断"门禁是否存在"就会永远跳过补条件，留下一个
+ * 什么都不检查的空壳。对账让脚本从任何中间状态都能收敛。
+ */
+async function reconcileConditions(gateId) {
+  const existing = (await showGate(gateId)).conditions || [];
+
+  for (const c of existing) {
+    if (CONDITIONS.some((want) => sameCondition(want, c))) continue;
+    console.log(`    - 删除多余条件 ${c.metric} ${c.op} ${c.error}`);
+    await api('POST', 'qualitygates/delete_condition', { organization: ORG, id: String(c.id) });
+  }
+
+  for (const want of CONDITIONS) {
+    if (existing.some((c) => sameCondition(want, c))) continue;
+    console.log(`    + ${want.metric} ${want.op} ${want.error}`);
+    await api('POST', 'qualitygates/create_condition', {
+      organization: ORG,
+      gateId: String(gateId),
+      metric: want.metric,
+      op: want.op,
+      error: want.error,
+    });
+  }
+}
+
+async function apply() {
+  let gate = await gateByName(CUSTOM_GATE);
+  if (!gate) {
     console.log(`==> 创建质量门禁「${CUSTOM_GATE}」`);
     await api('POST', 'qualitygates/create', { organization: ORG, name: CUSTOM_GATE });
-    for (const c of CONDITIONS) {
-      console.log(`    + ${c.metric} ${c.op} ${c.error}`);
-      await api('POST', 'qualitygates/create_condition', {
-        organization: ORG,
-        gateName: CUSTOM_GATE,
-        metric: c.metric,
-        op: c.op,
-        error: c.error,
-      });
-    }
+    gate = await gateByName(CUSTOM_GATE);
+    if (!gate) throw new Error(`创建后仍找不到门禁「${CUSTOM_GATE}」`);
   } else {
-    console.log(`==> 「${CUSTOM_GATE}」已存在，跳过创建`);
+    console.log(`==> 门禁「${CUSTOM_GATE}」已存在（id=${gate.id}）`);
   }
+
+  console.log('==> 对齐条件');
+  await reconcileConditions(gate.id);
 
   console.log(`==> 将项目 ${PROJECT} 指向「${CUSTOM_GATE}」`);
   await api('POST', 'qualitygates/select', {
     organization: ORG,
-    gateName: CUSTOM_GATE,
+    gateId: String(gate.id),
     projectKey: PROJECT,
   });
 }
 
 async function revert() {
-  console.log(`==> 将项目 ${PROJECT} 改回内置「${BUILTIN_GATE}」`);
+  const gate = await gateByName(BUILTIN_GATE);
+  if (!gate) throw new Error(`找不到内置门禁「${BUILTIN_GATE}」`);
+  console.log(`==> 将项目 ${PROJECT} 改回内置「${BUILTIN_GATE}」（id=${gate.id}）`);
   await api('POST', 'qualitygates/select', {
     organization: ORG,
-    gateName: BUILTIN_GATE,
+    gateId: String(gate.id),
     projectKey: PROJECT,
   });
 }
@@ -126,11 +163,8 @@ if (!run) {
 console.log(`==> 当前门禁：${await currentGate()}`);
 await run();
 console.log(`==> 变更后门禁：${await currentGate()}`);
-const shown = await api('GET', 'qualitygates/show', {
-  organization: ORG,
-  name: await currentGate(),
-});
+const finalGate = await gateByName(await currentGate());
 console.log('==> 生效条件：');
-for (const c of shown.conditions || []) {
+for (const c of (await showGate(finalGate.id)).conditions || []) {
   console.log(`    ${c.metric} ${c.op} ${c.error}`);
 }
