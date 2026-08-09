@@ -166,28 +166,33 @@ auto_merge:
       同名 triage-log.json 都会被放行。守卫逻辑有单测：
       node --test scripts/security/tests/auto-merge-triage-log.test.mjs
 
-# 已知结构性红灯（不是可修复告警，巡检不得反复尝试）
-known_structural_failures:
-  - check: "GitHub check-run: SonarCloud Code Analysis"
-    reason: >
-      质量门禁 Sonar way 含 new_coverage >= 80%，而本仓库不产出也不上报覆盖率
-      （Rust 侧无覆盖率工具；前端 vitest 未装 @vitest/coverage-v8、不输出 lcov），
-      该项恒为 0 故门禁恒红。门禁其余五项（安全/可靠性/可维护性评级、重复率、
-      安全热点复核率）当前全部通过。
-    why_not_fixable_in_repo: >
-      去掉该条件需要自定义质量门禁，而自定义门禁是 Team/Enterprise 套餐功能，
-      本组织为 Free 套餐：qualitygates/create 与 create_condition 会返回 200，
-      但 qualitygates/select 返回 403 "not allowed to modify Quality gates"。
-      2026-08-09 已实测并清理残留门禁，勿再尝试。
-    agent_must:
-      - 不得为它创建修复 PR
-      - 不得计入 attempts
-      - 不得因它反复标记 needs_human
-      - 判断 github_ci_state 时将其排除；其余 check 全绿即视为 CI 正常
-      - 在巡检总结里一句话带过即可
-    real_options_need_human:
-      - 建覆盖率流水线（Rust cargo-llvm-cov + 前端 lcov），建成后新代码覆盖率仍需 ≥80%
-      - 升级到 Team 套餐后改用自定义门禁
+# 覆盖率与质量门禁的现状（2026-08-09 结案，勿再按旧结论行事）
+#
+# 曾经：门禁 Sonar way 含 new_coverage>=80%，而本仓库不产出覆盖率，该项恒为 0，
+# GitHub 上的「SonarCloud Code Analysis」每次提交都是红叉。当时一度打算把它登记为
+# 「已知结构性红灯、巡检一律忽略」—— 那条规则已删除，因为它很危险：一旦
+# SonarCloud 哪天真的因为安全问题变红，巡检会照样忽略掉。
+#
+# 现在：已在 sonar-project.properties 里用 sonar.coverage.exclusions 如实声明
+# 本仓库不产出覆盖率数据，该条件因无数据而不参与判定，门禁已 OK，check 已绿。
+# 因此 **SonarCloud Code Analysis 变红就是真的有问题，必须当作真实告警处置。**
+coverage_status:
+  reports_coverage: false
+  declared_via: "sonar-project.properties → sonar.coverage.exclusions"
+  rationale: >
+    Rust 侧无覆盖率工具（llvm-cov / tarpaulin 全仓库零命中），前端 vitest 未装
+    @vitest/coverage-v8 且 reporter 无 lcov —— 配置里那两行 lcov 路径指向的文件
+    并不存在。声明"不期待覆盖率数据"是如实陈述，而不是把 0% 藏起来。
+    注意 coverage.exclusions 只影响覆盖率一个指标，全部分析规则照常运行，
+    与 suppression.forbidden 里禁止的 sonar.exclusions 源文件排除不是一回事。
+  todo_when_coverage_lands: >
+    建好覆盖率流水线（Rust cargo-llvm-cov + 前端补 @vitest/coverage-v8 输出 lcov）
+    后，必须删掉 sonar.coverage.exclusions 这一行，让门禁重新对覆盖率生效。
+  do_not_retry: >
+    不要再尝试用自定义质量门禁去掉该条件：自定义门禁是 Team/Enterprise 套餐功能，
+    本组织为 Free。2026-08-09 实测 qualitygates/create 与 create_condition 返回 200
+    （会真的建出门禁），但 qualitygates/select 返回 403
+    "Organization ... is not allowed to modify Quality gates"，残留门禁已清理。
 
 # 安全边界（对 AI Agent 的硬性约束）
 security_boundaries:
