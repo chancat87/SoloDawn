@@ -1,6 +1,6 @@
 {
   "schema": "solodawn-security-triage-v1",
-  "updated_at": "2026-08-09T15:20:00Z",
+  "updated_at": "2026-08-10T00:40:00Z",
   "entries": {
     "audit:logging-filesystem-410": {
       "alert": "scripts/audit-security.sh 日志安全检查误报：crates/services/src/services/filesystem.rs:410 `tracing::trace!(\"Cancellation token triggered\")`",
@@ -189,6 +189,14 @@
         "must_revert_when": "建成覆盖率流水线（Rust cargo-llvm-cov + 前端 @vitest/coverage-v8 输出 lcov）后，必须删除 sonar.coverage.exclusions 一行，让覆盖率门禁重新生效；否则真实覆盖率会被一直忽略。",
         "date": "2026-08-09"
       }
+    },
+    "review:2026-08-10-glib-2086003462864535552": {
+      "alert": "复核 CNB 中危依赖漏洞 glib@0.18.5（GHSA-wrw7-89jp-8q8g，Cargo.lock:2432）告警 id 2086003462864535552（occur_version=41d54504，当前 main sha 203de74ad）",
+      "verdict": "confirmed_real_requires_human",
+      "reason": "2026-08-10 巡检复核：CNB repo-code-issue API 实查（issue-rule=VUL_WARN / risk-level=all）当前可访问告警仍仅此 1 条 open（glib@0.18.5，occur_version/revision=41d54504，早于当前 main 203de74ad，扫描器基于旧快照）。Cargo.lock 实查 glib 仍 0.18.5；依赖链 crates/tray → tray-icon 0.19.3 → libappindicator 0.9.0 → gtk 0.18.2 → glib ^0.18，全链约束 ^0.18。crates.io sparse index 实查：gtk 最新仍为 0.18.2（glib_req=^0.18）、libappindicator 0.9.0（glib_req=^0.18）、tray-icon 最新 0.24.2 仍依赖 gtk ^0.18 与 libappindicator ^0.9，故 glib 0.20.0 在当前依赖树仍不可解析。仓库无任何对 glib::VariantStrIter 的直接调用（grep 零命中），该脆弱代码仅经 Linux 桌面托盘场景传递引入。",
+      "basis": "CNB repo-code-issue list/detail API 实查（VUL_WARN total=1，仅 glib）；Cargo.lock 实查 glib=0.18.5 / gtk=0.18.2 / tray-icon=0.19.3 / libappindicator=0.9.0；crates.io sparse index 实查 gtk max=0.18.2、tray-icon max=0.24.2（gtk ^0.18 / libappindicator ^0.9）、libappindicator 0.9.0（glib ^0.18）、glib max=0.22.8；grep -rn VariantStrIter crates/ 零命中；上游 advisory GHSA-wrw7-89jp-8q8g fixed=0.20.0 为主版本升级。与既有 cnb:2085471182022676480 / review:2026-08-08-glib / review:2026-08-08-glib-2086003462864535552 / review:2026-08-08-20h-glib-2086003462864535552 同源同判定。",
+      "action": "维持 open 待人工/上游跟进。不创建无效修复 PR（glib 0.20.0 在当前依赖树不可解析，升级需等待上游 gtk/tray-icon/libappindicator 链放开 ^0.18 约束或引入可替换依赖），不降低安全标准，不扩大忽略范围。本轮 github-status 显示 CNB↔GitHub main sha 一致（203de74ad），GitHub CI total=15 / failed=0 / pending=0，CI 全绿。",
+      "date": "2026-08-10"
     }
   }
 }
