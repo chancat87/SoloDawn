@@ -1,6 +1,6 @@
 {
   "schema": "solodawn-security-triage-v1",
-  "updated_at": "2026-08-21T00:40:00Z",
+  "updated_at": "2026-08-22T00:40:00Z",
   "entries": {
     "audit:logging-filesystem-410": {
       "alert": "scripts/audit-security.sh 日志安全检查误报：crates/services/src/services/filesystem.rs:410 `tracing::trace!(\"Cancellation token triggered\")`",
@@ -221,6 +221,14 @@
       "basis": "Cargo.lock 实查 glib=0.18.5 / gtk=0.18.2 / tray-icon=0.19.3 / libappindicator=0.9.0；crates.io API 实查 gtk max_stable=0.18.2、tray-icon max_stable=0.24.2、libappindicator max_stable=0.9.0（全链约束 glib ^0.18）；grep -rn VariantStrIter crates/ 零命中；上游 advisory GHSA-wrw7-89jp-8q8g fixed=0.20.0 为主版本升级且不可解析（历轮已多次核实 crates.io 无 gtk 0.20+、tray-icon/libappindicator 全链约束 ^0.18）；github-status 显示 cnb_main_sha==github_main_sha==c76e42097，同步正常，GitHub CI total=14 / failed=0 / pending=0，CI 全绿。",
       "action": "维持 open 待人工/上游跟进。不创建无效修复 PR（glib 0.20.0 在当前依赖树不可解析，需等待上游 gtk/tray-icon/libappindicator 链放开 ^0.18 约束或引入可替换依赖），不降低安全标准，不扩大忽略范围。本轮为已处理告警复用既有结论，仅更新 triage-log 审计日志，不重复建 PR。",
       "date": "2026-08-21"
+    },
+    "review:2026-08-22-glib-2090600802804011008": {
+      "alert": "复核 CNB 中危依赖漏洞 glib@0.18.5（GHSA-wrw7-89jp-8q8g，Cargo.lock:2432）告警 id 2090600802804011008（occur_version=4a59ec069543c2a53bcf1fa75fd871594beda871=当前 main sha）",
+      "verdict": "confirmed_real_requires_human",
+      "reason": "2026-08-22 巡检复核：本次派单仅此 1 条告警（id 2090600802804011008，occur_version/revision=4a59ec069=当前 main，扫描器已基于最新 main 重扫）。Cargo.lock 实查 glib 仍 0.18.5（line 2431）；依赖链 crates/tray(solodawn-tray) → tray-icon 0.19.3 → libappindicator 0.9.0 → gtk 0.18.2 → glib ^0.18 全部约束 ^0.18；crates.io API 实查 gtk max_stable 仍为 0.18.2（无 0.20+）、tray-icon max_stable 0.24.2 仍依赖 gtk ^0.18 与 libappindicator ^0.9、libappindicator max_stable 0.9.0，glib 0.20.0 在当前依赖树仍不可解析。仓库无任何对 glib::VariantStrIter 的直接调用（grep crates/ 零命中），脆弱代码仅经 Linux 桌面托盘场景传递引入。与既有 cnb:2085471182022676480 / review:2026-08-08-glib / review:2026-08-08-20h-glib-2086003462864535552 / review:2026-08-10-glib-2086003462864535552 / review:2026-08-15-glib-2086614560588333056 / review:2026-08-18-glib-2088787811150274560 / review:2026-08-21-glib-2089512649376616448 同源同版本，直接复用既有 confirmed_real_requires_human 结论，不重复建修复 PR。",
+      "basis": "Cargo.lock 实查 glib=0.18.5 / gtk=0.18.2 / tray-icon=0.19.3 / libappindicator=0.9.0；crates.io API 实查 gtk max_stable=0.18.2、tray-icon max_stable=0.24.2、libappindicator max_stable=0.9.0（全链约束 glib ^0.18）；grep -rn VariantStrIter crates/ 零命中；上游 advisory GHSA-wrw7-89jp-8q8g fixed=0.20.0 为主版本升级且不可解析（历轮已多次核实 crates.io 无 gtk 0.20+、tray-icon/libappindicator 全链约束 ^0.18）；github-status 显示 github_main_sha=c76e42097（GitHub 侧落后 CNB 一个提交 4a59ec069，待同步流水线 */5 crontab 补齐），GitHub CI total=14 / failed=0 / pending=0，CI 全绿。",
+      "action": "维持 open 待人工/上游跟进。不创建无效修复 PR（glib 0.20.0 在当前依赖树不可解析，需等待上游 gtk/tray-icon/libappindicator 链放开 ^0.18 约束或引入可替换依赖），不降低安全标准，不扩大忽略范围。本轮为已处理告警复用既有结论，仅更新 triage-log 审计日志，不重复建 PR。",
+      "date": "2026-08-22"
     }
   }
 }
